@@ -1,0 +1,13 @@
+[package]
+name = "cl-async"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam-queue = "0.3.12"
+num_cpus = "1.16.0"
+once_cell = "1.20.3"
+log = { version = "0.4.26", features = ["std"] }
+thiserror = "2.0.12"
+cl-log = { git = "ssh://git@github.com/Liyara/cl-log.git", rev = "39bf8c6" }
+libc = "0.2.170"
