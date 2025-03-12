@@ -1,17 +1,34 @@
-use std::sync::Mutex;
-
+use std::{cmp::max, os::fd::AsRawFd, sync::Arc};
 use log::error;
 use once_cell::sync::Lazy;
 use pool::ThreadPool;
-use task::Task;
 use thiserror::Error;
 
-mod task;
-mod executor;
-mod pool;
-mod message;
+mod event_poller;
+mod event_handler;
 mod worker;
+mod event_channel;
+mod task;
+mod message;
 mod worker_state;
+mod executor;
+mod event_callback_registry;
+mod pool;
+
+pub use task::Task;
+
+#[macro_export]
+#[allow(unused_macros)]
+macro_rules! syscall {
+    ($fn: ident ( $($arg: expr),* $(,)* ) ) => {{
+        let res = unsafe { libc::$fn($($arg, )*) };
+        if res == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(res)
+        }
+    }};
+}
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -21,52 +38,46 @@ pub enum Error {
     #[error("Pool error: {0}")]
     Pool(#[from] pool::PoolError),
 
-    #[error("Worker error: {0}")]
-    Worker(#[from] worker::WorkerError),
-
     #[error("Failed to acquire pool lock")]
     LockError,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-static POOL: Lazy<Mutex<ThreadPool>> = Lazy::new(|| {
-    let mut pool = ThreadPool::new(num_cpus::get());
-    match pool.start() {
-        Ok(_) => (),
-        Err(e) => error!("Failed to start pool: {}", e),
-    }
-    Mutex::new(pool)
+static POOL: Lazy<ThreadPool> = Lazy::new(|| {
+    let pool = ThreadPool::new(max(2, num_cpus::get()));
+    pool.start().expect("Failed to start thread pool");
+    pool
 });
 
+// Schedules a new task to be executed by the thread pool.
 pub fn spawn<F>(fut: F) -> Result<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static
+{ Ok(POOL.spawn(Task::new(fut))?) }
+
+// Registers interest in a file descriptor for events.
+pub fn register_interest<T, H>(
+    source: &T, 
+    interest_type: event_poller::InterestType,
+    handler: H
+) -> Result<()> 
+where 
+    T: AsRawFd,
+    H: event_callback_registry::EventHandler + Send + Sync + 'static
 {
-    let task = Task::new(fut);
-    POOL.lock().map_err(|_| Error::LockError)?.spawn(task)?;
-    Ok(())
+    Ok(POOL.register_interest(source, handler, interest_type)?)
 }
 
 // Blocks the current thread until all pool threads have been stopped.
-pub fn join() -> Result<()> {
-    POOL.lock().map_err(|_| Error::LockError)?.join()?;
-    Ok(())
-}
+pub fn join() -> Result<()> { Ok(POOL.join()?) }
 
 // Gracefully stops all threads in the pool, allowing all tasks to finish.
-pub fn shutdown() -> Result<()> {
-   POOL.lock().map_err(|_| Error::LockError)?.shutdown()?;
-   Ok(())
-}
+pub fn shutdown() -> Result<()> { Ok(POOL.shutdown()?) }
 
 // Immediately stops all threads in the pool, ignoring all tasks.
-pub fn kill() -> Result<()> {
-    POOL.lock().map_err(|_| Error::LockError)?.kill();
-    Ok(())
-}
+pub fn kill() -> Result<()> { Ok(POOL.kill()?) }
 
-pub fn num_threads() -> Result<usize> {
-    let n = POOL.lock().map_err(|_| Error::LockError)?.num_threads();
-    Ok(n)
-}
+// Returns the number of threads in the pool.
+// This should always equal the number of CPUs.
+pub fn num_threads() -> Result<usize> { Ok(POOL.num_threads()) }

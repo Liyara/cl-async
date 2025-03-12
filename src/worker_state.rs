@@ -5,7 +5,8 @@ pub enum WorkerState {
     Starting = 1,
     Idle = 2,
     Busy = 3,
-    Stopping = 4
+    Stopping = 4,
+    Stopped = 5,
 }
 
 impl From<u8> for WorkerState {
@@ -16,6 +17,7 @@ impl From<u8> for WorkerState {
             2 => WorkerState::Idle,
             3 => WorkerState::Busy,
             4 => WorkerState::Stopping,
+            5 => WorkerState::Stopped,
             _ => unreachable!(),
         }
     }

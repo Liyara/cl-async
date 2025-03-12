@@ -1,10 +1,11 @@
-use std::{collections::BTreeMap, sync::{mpsc::Sender, Arc}, task::{Context, Poll, Wake, Waker}};
+use std::{sync::Arc, task::{Context, Poll, Wake, Waker}};
 
 use crossbeam_queue::ArrayQueue;
 use log::error;
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 
-use crate::{message::Message, task::{Task, TaskId}};
+use crate::{message::Message, task::{Task, TaskId}, worker::{WorkSender, WorkerError}};
 
 #[derive(Debug, Error)]
 pub enum ExecutorError {
@@ -14,25 +15,28 @@ pub enum ExecutorError {
     #[error("Queue full when attempting to push task with ID {0}")]
     QueueFull(TaskId),
 
-    #[error("Failed to send Continue message to worker")]
-    SendContinue(#[from] std::sync::mpsc::SendError<Message>),
+    #[error("Failed to send Continue message to worker ({source}")]
+    FailedToSendContinue {
+        #[source]
+        source: Box<WorkerError>,
+    },
 }
 
 
 pub struct Executor {
-    tasks: BTreeMap<TaskId, Task>,
+    tasks: FxHashMap<TaskId, Task>,
     task_queue: Arc<ArrayQueue<TaskId>>,
-    tx: Sender<Message>,
-    waker_cache: BTreeMap<TaskId, Waker>,
+    tx: WorkSender,
+    waker_cache: FxHashMap<TaskId, Waker>,
 }
 
 impl Executor {
-    pub (crate) fn new(capacity: usize, tx: Sender<Message>) -> Self {
+    pub (crate) fn new(capacity: usize, tx: WorkSender) -> Self {
         Self {
-            tasks: BTreeMap::new(),
+            tasks: FxHashMap::default(),
             task_queue: Arc::new(ArrayQueue::new(capacity)),
             tx,
-            waker_cache: BTreeMap::new(),
+            waker_cache: FxHashMap::default(),
         }
     }
 
@@ -79,19 +83,19 @@ impl Executor {
 
 struct TaskWaker {
     task_id: TaskId,
-    tx: Sender<Message>,
+    tx: WorkSender,
     task_queue: Arc<ArrayQueue<TaskId>>,
 }
 
 impl TaskWaker {
 
-    fn new(task_id: TaskId, task_queue: Arc<ArrayQueue<TaskId>>, tx: Sender<Message>) -> Waker {
+    fn new(task_id: TaskId, task_queue: Arc<ArrayQueue<TaskId>>, tx: WorkSender) -> Waker {
         Waker::from(Arc::new(TaskWaker {
             task_id,
             tx,
             task_queue,
         }))
-    }
+    } 
 
     fn wake_task(&self) -> Result<(), ExecutorError> {
         match self.task_queue.push(self.task_id) {
@@ -99,9 +103,9 @@ impl TaskWaker {
             Err(id) => return Err(ExecutorError::QueueFull(id)),
         }
 
-        match self.tx.send(Message::Continue) {
+        match self.tx.send_message(Message::Continue) {
             Ok(_) => {}
-            Err(e) => return Err(ExecutorError::SendContinue(e)),
+            Err(e) => return Err(ExecutorError::FailedToSendContinue { source: Box::new(e) }),
         }
 
         Ok(())
