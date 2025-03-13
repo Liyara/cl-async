@@ -40,7 +40,7 @@ pub struct EventSender {
 }
 
 #[derive(Debug, Clone)]
-pub struct EventReceiver {
+pub struct _EventReceiver {
     fd: Arc<OwnedFd>,
 }
 
@@ -73,26 +73,6 @@ impl EventSender {
     }
 }
 
-impl EventReceiver {
-    fn new(fd: Arc<OwnedFd>) -> Self {
-        Self { fd }
-    }
-
-    pub fn recv<T>(&self) -> Result<T, EventChannelError>
-    where T: From<u64> {
-        let mut buffer = 0u64.to_ne_bytes();
-        let bytes_read = syscall!(
-            read(self.fd.as_raw_fd(), buffer.as_mut_ptr() as *mut libc::c_void, std::mem::size_of::<u64>())
-        ).map_err(|e| EventChannelError::FailedToReceiveEvent(e.to_string()))?;
-
-        if bytes_read != 8 {
-            return Err(EventChannelError::PartialTransfer(bytes_read));
-        }
-
-        Ok(T::from(u64::from_ne_bytes(buffer)))
-    }
-}
-
 impl EventChannel {
 
     pub fn new() -> Result<Self, EventChannelError> {
@@ -115,10 +95,6 @@ impl EventChannel {
 
     pub fn as_sender(&self) -> EventSender {
         EventSender::new(Arc::clone(&self.fd))
-    }
-
-    pub fn as_receiver(&self) -> EventReceiver {
-        EventReceiver::new(Arc::clone(&self.fd))
     }
 }
 

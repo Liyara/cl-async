@@ -1,4 +1,5 @@
-use std::{cmp::max, os::fd::AsRawFd, sync::Arc};
+use std::sync::Arc;
+use std::{cmp::max, os::fd::AsRawFd};
 use log::error;
 use once_cell::sync::Lazy;
 use pool::ThreadPool;
@@ -16,6 +17,11 @@ mod event_callback_registry;
 mod pool;
 
 pub use task::Task;
+pub use event_callback_registry::EventCallbackRegistry;
+pub use event_callback_registry::EventCallbackData as SubscriptionManager;
+pub use event_callback_registry::EventHandler;
+pub use event_poller::PollEvent as Event;
+pub use event_poller::InterestType;
 
 #[macro_export]
 #[allow(unused_macros)]
@@ -49,6 +55,9 @@ static POOL: Lazy<ThreadPool> = Lazy::new(|| {
     pool.start().expect("Failed to start thread pool");
     pool
 });
+
+pub (crate) fn get_stealers_rand(worker_id: usize) -> Arc<Vec<worker::WorkStealer>>
+{ POOL.get_stealers_rand(worker_id) }
 
 // Schedules a new task to be executed by the thread pool.
 pub fn spawn<F>(fut: F) -> Result<()>

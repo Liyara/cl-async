@@ -331,15 +331,6 @@ impl EventPoller {
         })
     }
 
-    pub fn capacity(&self) -> usize {
-        self.buffer_size
-    }
-
-    pub fn set_capacity(&mut self, capacity: usize) {
-        self.buffer.reserve_exact(capacity);
-        self.buffer_size = capacity;
-    }
-
     pub fn registry(&self) -> EventRegistry {
         self.event_registry.clone()
     }

@@ -1,4 +1,4 @@
-use std::{os::fd::AsRawFd, sync::Arc};
+use std::sync::Arc;
 use dashmap::DashMap;
 use log::error;
 use thiserror::Error;
@@ -116,5 +116,15 @@ impl EventCallbackRegistry {
         if let Some(cb) = self.callbacks.get(&key) {
             cb.value().handle(event, EventCallbackData { key, event_registry })
         } else { None }
+    }
+
+    pub fn run(
+        &self,
+        key: Key,
+        event: PollEvent,
+        event_registry: EventRegistry
+    ) -> Result<Option<Task>, EventCallbackRegistryError> {
+        let cb = self.get(key).ok_or(EventCallbackRegistryError::KeyNotFound)?;
+        Ok(cb.handle(event, EventCallbackData { key, event_registry }))
     }
 }

@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, os::fd::AsRawFd, sync::{atomic::AtomicUsize, Arc}};
-
+use std::{os::fd::AsRawFd, sync::{atomic::AtomicUsize, Arc}};
 use dashmap::DashMap;
-use log::{debug, info};
+use log::info;
+use rand::seq::SliceRandom;
 use thiserror::Error;
 
-use crate::{event_callback_registry::{self, EventCallbackData}, event_poller::{self, PollEvent}, task::Task, worker::{self, Worker}};
+use crate::{event_callback_registry, event_poller, task::Task, worker::{self, WorkStealer, Worker}};
 
 #[derive(Debug, Error)]
 pub enum PoolError {
@@ -27,12 +27,13 @@ pub enum PoolError {
 pub struct ThreadPool {
     n_threads: usize,
     workers: DashMap<usize, Worker>,
+    stealers: DashMap<usize, Arc<Vec<WorkStealer>>>,
 }
 
 impl ThreadPool {
     pub (crate) fn new(n_threads: usize) -> Self {
         assert!(n_threads > 0);
-        Self { n_threads, workers: DashMap::new() }
+        Self { n_threads, workers: DashMap::new(), stealers: DashMap::new() }
     }
 
     fn get_next_worker(
@@ -115,6 +116,18 @@ impl ThreadPool {
 
     pub fn num_threads(&self) -> usize {
         self.n_threads
+    }
+
+    pub fn get_stealers_rand(&self, worker_id: usize) -> Arc<Vec<WorkStealer>> {
+        Arc::clone(&self.stealers.entry(worker_id).or_insert({
+            let mut stealers = Vec::with_capacity(self.n_threads);
+            for multi in self.workers.iter() {
+                if *multi.key() == worker_id { continue; }
+                stealers.push(multi.value().stealer());
+            }
+            stealers.shuffle(&mut rand::rng());
+            Arc::new(stealers)
+        }))
     }
             
 }
