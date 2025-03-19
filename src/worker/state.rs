@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WorkerState {
@@ -19,6 +21,19 @@ impl From<u8> for WorkerState {
             4 => WorkerState::Stopping,
             5 => WorkerState::Stopped,
             _ => unreachable!(),
+        }
+    }
+}
+
+impl fmt::Display for WorkerState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WorkerState::None => write!(f, "None"),
+            WorkerState::Starting => write!(f, "Starting"),
+            WorkerState::Idle => write!(f, "Idle"),
+            WorkerState::Busy => write!(f, "Busy"),
+            WorkerState::Stopping => write!(f, "Stopping"),
+            WorkerState::Stopped => write!(f, "Stopped"),
         }
     }
 }
