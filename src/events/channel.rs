@@ -1,6 +1,14 @@
-use std::{os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}, sync::Arc};
+use std::{
+    os::fd::{
+        AsRawFd, 
+        FromRawFd, 
+        OwnedFd, 
+        RawFd
+    }, 
+    sync::Arc
+};
+
 use thiserror::Error;
-use crate::syscall;
 use bitflags::bitflags;
 
 #[derive(Error, Debug)]
@@ -59,12 +67,12 @@ impl EventChannel {
         })
     }
 
-    pub fn as_sender(&self) -> EventSender {
-        EventSender::new(Arc::clone(&self.fd))
+    pub fn as_sender(&self) -> EventChannelSender {
+        EventChannelSender::new(Arc::clone(&self.fd))
     }
 
-    pub fn as_receiver(&self) -> EventReceiver {
-        EventReceiver::new(Arc::clone(&self.fd))
+    pub fn as_receiver(&self) -> EventChannelReceiver {
+        EventChannelReceiver::new(Arc::clone(&self.fd))
     }
 }
 
@@ -75,11 +83,11 @@ impl AsRawFd for EventChannel {
 }
 
 #[derive(Debug, Clone)]
-pub struct EventSender {
+pub struct EventChannelSender {
     fd: Arc<OwnedFd>,
 }
 
-impl EventSender {
+impl EventChannelSender {
     fn new(fd: Arc<OwnedFd>) -> Self {
         Self { fd }
     }
@@ -106,11 +114,11 @@ impl EventSender {
 }
 
 #[derive(Debug, Clone)]
-pub struct EventReceiver {
+pub struct EventChannelReceiver {
     fd: Arc<OwnedFd>,
 }
 
-impl EventReceiver {
+impl EventChannelReceiver {
     fn new(fd: Arc<OwnedFd>) -> Self {
         Self { fd }
     }

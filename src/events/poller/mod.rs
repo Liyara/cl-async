@@ -13,10 +13,7 @@ use dashmap::DashMap;
 use thiserror::Error;
 use crate::key::KeyGenerator;
 
-use crate::{
-    syscall, 
-    OSError
-};
+use crate::OSError;
 
 pub use self::interest_type::InterestType;
 pub use self::registry::EventPollerRegistry;
@@ -87,8 +84,8 @@ impl EventPoller {
             )
         ).map_err(|e| EventPollerError::FailedToPollEvents { source: e.into() })?;
 
-        log::info!(
-            "Polled {} events in fd {} with timeout {}",
+        info!(
+            "cl-async: Polled {} events in fd {} with timeout {}",
             n,
             self.inner.as_raw_fd(),
             timeout

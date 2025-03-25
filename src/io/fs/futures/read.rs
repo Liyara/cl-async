@@ -21,7 +21,10 @@ use crate::{
 };
 
 use super::{
-    FileFuture, FileMultiFuture, JoinableFileFuture, ToFileFuture
+    FileFuture, 
+    FileMultiFuture, 
+    JoinableFileFuture, 
+    ToFileFuture
 };
 
 
@@ -62,7 +65,7 @@ impl Future for FileReadFuture {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
 
-        match &mut self.handle {
+        match &self.handle {
             None => {
                 let op = self.as_io_operation();
                 self.handle = Some(crate::submit_io_operation(

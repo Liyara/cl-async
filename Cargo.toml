@@ -1,7 +1,13 @@
 [package]
 name = "cl-async"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+
+[features]
+default = ["log-info", "log-warn", "log-error"]
+log-info = ["log", "cl-log"]
+log-warn = ["log", "cl-log"]
+log-error = ["log", "cl-log"]
 
 [dependencies]
 crossbeam-deque = "0.8.6"
@@ -10,9 +16,9 @@ crossbeam-channel = "0.5.14"
 crossbeam =  "0.8.4"
 num_cpus = "1.16.0"
 once_cell = "1.20.3"
-log = { version = "0.4.26", features = ["std"] }
+log = { version = "0.4.26", features = ["std"], optional = true }
 thiserror = "2.0.12"
-cl-log = { git = "ssh://git@github.com/Liyara/cl-log.git", rev = "f68342b" }
+cl-log = { git = "https://github.com/Liyara/cl-log.git", optional = true }
 libc = "0.2.170"
 bitflags = "2.9.0"
 rustc-hash = "2.1.1"

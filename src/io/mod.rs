@@ -12,7 +12,8 @@ pub (crate) use completion::IOCompletionQueue;
 pub (crate) use completion::IOCompletion;
 pub (crate) use completion::IOReadCompletion;
 pub (crate) use completion::IOWriteCompletion;
-pub (crate) use operation::IOOperation;
+
+pub use operation::IOOperation;
 
 #[derive(Debug, Clone, Copy)]
 pub enum IOType {

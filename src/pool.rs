@@ -1,15 +1,26 @@
-use std::{
-    os::fd::AsRawFd, 
-    sync::atomic::AtomicUsize
-};
+use std::sync::atomic::AtomicUsize;
 use dashmap::DashMap;
 use thiserror::Error;
 
 use crate::{
     events::{
-        handler::registry::EventHandlerRegistryError, 
-        poller::{registry::EventPollerRegistryError, EventPollerError, InterestType}, EventHandler
-    }, io::IOOperation, worker::{WorkerError, WorkerIOSubmissionHandle, WorkerState}, Task, Worker
+        poller::{
+            registry::EventPollerRegistryError, 
+            EventPollerError, 
+            InterestType
+        }, 
+        EventQueue, 
+        EventReceiver, 
+        EventSource
+    }, 
+    io::IOOperation, 
+    worker::{
+        WorkerError, 
+        WorkerIOSubmissionHandle, 
+        WorkerState
+    }, 
+    Task, 
+    Worker
 };
 
 #[derive(Debug, Error)]
@@ -22,9 +33,6 @@ pub enum PoolError {
 
     #[error("Event Poller error: {0}")]
     EventPollerError(#[from] EventPollerError),
-
-    #[error("Event Handler Registry error: {0}")]
-    EventCallbackRegistryError(#[from] EventHandlerRegistryError),
 
     #[error("Event Poller Registry error: {0}")]
     EventPollerRegistryError(#[from] EventPollerRegistryError),
@@ -43,19 +51,19 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     pub (crate) fn new(n_threads: usize) -> Self {
-        assert!(n_threads > 0);
+        let n_threads = std::cmp::max(2, n_threads);
         Self { n_threads, workers: DashMap::new() }
     }
 
-    fn next_worker_id(&self) -> usize {
+    fn next_worker_id(&'static self) -> usize {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         id % self.n_threads
     }
 
     fn get_next_worker(
-        &self
-    ) -> Result<dashmap::mapref::one::RefMut<'_, usize, Worker>, PoolError> {
+        &'static self
+    ) -> Result<dashmap::mapref::one::RefMut<'static, usize, Worker>, PoolError> {
         for _ in 0..self.n_threads {
             
             let next_worker_id = self.next_worker_id();
@@ -79,84 +87,111 @@ impl ThreadPool {
         Err(PoolError::NoWorkersAvailable)
     }
 
-    pub fn spawn(&self, task: Task) -> Result<(), PoolError> {
-        log::info!("Spawning task with ID {}", task.id);
+    pub fn spawn(&'static self, task: Task) -> Result<(), PoolError> {
+        info!("cl-async: Spawning task with ID {}", task.id);
         Ok(self.get_next_worker()?.spawn(task)?)
     }
 
-    pub fn spawn_multiple(&self, tasks: Vec<Task>) -> Result<(), PoolError> {
+    pub fn spawn_multiple(&'static self, tasks: Vec<Task>) -> Result<(), PoolError> {
+        info!("cl-async: Spawning {} tasks", tasks.len());
         Ok(self.get_next_worker()?.spawn_multiple(tasks)?)
     }
 
-    pub fn register_interest<T, H>(
-        &self,
-        source: &T, 
-        handler: H,
+    pub fn register_event_source<F, Fut>(
+        &'static self,
+        source: EventSource,
         interest_type: InterestType,
-    ) -> Result<(), PoolError> 
-    where 
-        T: AsRawFd,
-        H: EventHandler + Send + Sync + 'static
+        handler: F
+    ) -> Result<(), PoolError>
+    where
+        F: FnOnce(crate::events::EventReceiver) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static
     {
+        info!("cl-async: Registering event source {}", source);
+
         let worker = self.get_next_worker()?;
-        let event_registry = worker.event_registry();
-        let callback_registry = worker.callback_registry();
+        let event_registry = worker.event_registry().clone();
+        let event_queue_registry = worker.queue_registry().clone();
+        
 
-        let key = event_registry.register_interest(source, interest_type)?;
-        callback_registry.register(key, handler)?;
+        let task = Task::new(async move {
 
+            let key = match event_registry.register_interest(source, interest_type) {
+                Ok(key) => key,
+                Err(e) => {
+                    error!("cl-async: Failed to register interest: {}", e);
+                    return;
+                }
+            };
+
+            let event_queue = EventQueue::new();
+            event_queue_registry.register(key, event_queue.clone());
+            let event_receiver = EventReceiver::new(
+                source,
+                key,
+                event_queue,
+                event_registry.clone(),
+            );
+
+            handler(event_receiver).await;
+
+            let _ = event_registry.deregister_interest(key);
+            event_queue_registry.remove(key);
+        });
+
+        worker.spawn(task)?;
         Ok(())
     }
 
     pub fn submit_io_operation(
-        &self,
+        &'static self,
         operation: IOOperation, 
         waker: Option<std::task::Waker>
     ) -> Result<WorkerIOSubmissionHandle, PoolError> {
         let worker = self.get_next_worker()?;
-        log::info!("Submitting IO operation to worker {}", worker.id());
+        info!("cl-async: Submitting IO operation to worker {}", worker.id());
         Ok(worker.submit_io_operation(operation, waker)?)
     }
 
     pub fn submit_io_operations(
-        &self,
+        &'static self,
         operations: Vec<IOOperation>, 
         waker: Option<std::task::Waker>
     ) -> Result<crate::worker::WorkerMultipleIOSubmissionHandle, PoolError> {
         let worker = self.get_next_worker()?;
-        log::info!("Submitting {} IO operations to worker {}", operations.len(), worker.id());
+        info!("cl-async: Submitting {} IO operations to worker {}", operations.len(), worker.id());
         Ok(worker.submit_io_operations(operations, waker)?)
     }
 
-    pub fn start(&self) -> Result<(), PoolError> {
-        log::info!("Starting {} workers", self.n_threads);
+    pub fn start(self) -> Result<Self, PoolError> {
+        info!("cl-async: Starting {} workers", self.n_threads);
         for i in 0..self.n_threads {
             let mut worker = Worker::new(i)?;
             worker.start()?;
             self.workers.insert(i, worker);
         }
-        Ok(())
+        Ok(self)
     }
 
-    pub fn kill(&self) -> Result<(), PoolError> {
-        log::info!("Killing all workers");
+    pub fn kill(&'static self) -> Result<(), PoolError> {
+        info!("cl-async: Killing all workers");
         Ok(for i in 0..self.n_threads {
-            let mut worker = self.workers.get_mut(&i).ok_or(PoolError::WorkerNotFound(i))?;
+            let worker = self.workers.get_mut(&i).ok_or(PoolError::WorkerNotFound(i))?;
             worker.kill()?;
         })
     }
 
-    pub fn shutdown(&self) -> Result<(), PoolError> {
-        log::info!("Shutting down all workers");
+    pub fn shutdown(&'static self) -> Result<(), PoolError> {
+        info!("cl-async: Shutting down all workers");
         for i in 0..self.n_threads {
-            let mut worker = self.workers.get_mut(&i).ok_or(PoolError::WorkerNotFound(i))?;
+            let worker = self.workers.get_mut(&i).ok_or(PoolError::WorkerNotFound(i))?;
             worker.shutdown()?;
         }
         self.join();
         Ok(())
     }
 
-    fn join_single(&self, i: &usize) -> Result<(), PoolError> {
+    fn join_single(&'static self, i: &usize) -> Result<(), PoolError> {
         let mut worker_guard = self.workers.get_mut(&i).ok_or(PoolError::WorkerNotFound(*i))?;
         let handle = worker_guard.take_join_handle();
         drop(worker_guard);
@@ -166,16 +201,16 @@ impl ThreadPool {
         Ok(())
     }
 
-    pub fn join(&self) {
-        log::info!("Joining all workers");
+    pub fn join(&'static self) {
+        info!("cl-async: Joining all workers");
         for i in 0..self.n_threads {
             if let Err(e) = self.join_single(&i) {
-                log::warn!("Failed to join worker {i}: {e}");
+                warn!("cl-async: Failed to join worker {i}: {e}");
             }
         }
     }
 
-    pub fn num_threads(&self) -> usize {
+    pub fn num_threads(&'static self) -> usize {
         self.n_threads
     }
             

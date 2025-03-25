@@ -15,7 +15,11 @@ use crate::{
     worker::WorkerMultipleIOSubmissionHandle
 };
 
-use super::{FileFuture, JoinableFileFuture, ToFileFuture};
+use super::{
+    FileFuture, 
+    JoinableFileFuture, 
+    ToFileFuture
+};
 
 #[derive(Debug, Clone)]
 pub enum FileOperationResult {
@@ -117,7 +121,7 @@ impl Future for FileMultiFuture {
 
                 for (result, index) in completed_keys {
                     if index >= results.len() {
-                        log::error!("Index {} out of bounds ({})", index, results.len());
+                        error!("cl-async: Index {} out of bounds ({})", index, results.len());
                         return Poll::Ready(Err(FileError::UnknownIOError));
                     }
 

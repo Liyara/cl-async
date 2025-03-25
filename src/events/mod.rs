@@ -1,15 +1,22 @@
 mod r#type;
 
-pub mod handler;
-pub mod poller;
-pub mod channel;
-pub mod subscription_handle;
+pub (crate) mod poller;
+pub (crate) mod channel;
+
+mod source;
+mod queue;
+mod receiver;
+
+pub mod futures;
 
 pub use r#type::EventType;
-pub use subscription_handle::SubscriptionHandle;
 pub use channel::EventChannel;
 pub use poller::EventPoller;
-pub use handler::EventHandler;
+pub use poller::InterestType;
+pub use source::EventSource;
+pub use queue::EventQueue;
+pub use queue::registry::EventQueueRegistry;
+pub use receiver::EventReceiver;
 
 use crate::Key;
 

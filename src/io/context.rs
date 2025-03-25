@@ -4,10 +4,18 @@ use std::os::fd::{
 };
 use rustc_hash::FxHashMap;
 use thiserror::Error;
-use crate::{events::EventChannel, Key};
+use crate::{
+    events::EventChannel, 
+    Key
+};
 
 use super::{
-    IOCompletion, IOCompletionQueue, IOEntry, IOReadCompletion, IOType, IOWriteCompletion
+    IOCompletion, 
+    IOCompletionQueue, 
+    IOEntry, 
+    IOReadCompletion, 
+    IOType, 
+    IOWriteCompletion
 };
 
 #[derive(Debug, Error)]
@@ -42,34 +50,8 @@ pub struct IOContext {
 }
 
 impl IOContext {
-    pub fn new(
-        entries: u32,
-        idle_ms: u32,
-        sq_poll_cpu: u32,
-        cq_size: u32,
-    ) -> Result<Self, IOContextError> {
-        let ring = io_uring::IoUring::builder()
-            .setup_iopoll()
-            .setup_sqpoll(idle_ms)
-            .setup_sqpoll_cpu(sq_poll_cpu)
-            .setup_cqsize(cq_size)
-            .setup_clamp()
-            .setup_coop_taskrun()
-            .setup_taskrun_flag()
-        .build(entries).map_err(
-            |e| IOContextError::FailedToCreateIoUring { source: e }
-        )?;
 
-        let completion_queue = IOCompletionQueue::new();
-
-        Ok(Self {
-            inner: ring,
-            completion_queue,
-            flight_map: FxHashMap::default(),
-        })
-    }
-
-    pub fn default(entries: u32) -> Result<Self, IOContextError> {
+    pub fn new(entries: u32) -> Result<Self, IOContextError> {
         Ok(Self {
             inner: io_uring::IoUring::new(entries).map_err(
                 |e| IOContextError::FailedToCreateIoUring { source: e }

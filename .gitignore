@@ -1,6 +1,7 @@
 /target
 /Cargo.lock
 /src/main.rs
+/src/bin/*
 /flamegraph.svg
 /perf.data
 /perf.data.old

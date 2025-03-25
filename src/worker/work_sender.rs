@@ -1,7 +1,7 @@
 use thiserror::Error;
 use crate::events::channel::{
     EventChannelError, 
-    EventSender
+    EventChannelSender
 };
 use super::Message;
 
@@ -17,11 +17,11 @@ pub enum WorkSenderError {
 #[derive(Debug, Clone)]
 pub struct WorkSender {
     sender: crossbeam_channel::Sender<Message>,
-    message_signaler: EventSender,
+    message_signaler: EventChannelSender,
 }
 
 impl WorkSender {
-    pub fn new(sender: crossbeam_channel::Sender<Message>, message_signaler: EventSender) -> Self {
+    pub fn new(sender: crossbeam_channel::Sender<Message>, message_signaler: EventChannelSender) -> Self {
         Self { sender, message_signaler }
     }
 

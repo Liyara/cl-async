@@ -1,4 +1,10 @@
-use std::{fmt, sync::atomic::{AtomicU64, Ordering}};
+use std::{
+    fmt, 
+    sync::atomic::{
+        AtomicU64, 
+        Ordering
+    }
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskId(u64);

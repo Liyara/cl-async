@@ -3,7 +3,12 @@ use std::{os::fd::{AsRawFd, OwnedFd, RawFd}, sync::Arc};
 use dashmap::DashMap;
 use thiserror::Error;
 
-use crate::{key::KeyGenerator, syscall, Key, OSError};
+use crate::{
+    events::EventSource, 
+    key::KeyGenerator, 
+    Key, 
+    OSError
+};
 
 use super::InterestType;
 
@@ -36,11 +41,11 @@ pub struct EventPollerRegistry {
 
 impl EventPollerRegistry {
 
-    pub fn register_interest<T>(
+    pub fn register_interest(
         &self,
-        source: &T,
+        source: EventSource,
         interest_type: InterestType,
-    ) -> Result<Key, EventPollerRegistryError> where T: AsRawFd {
+    ) -> Result<Key, EventPollerRegistryError> {
         let key = self.generator.get();
         let fd = source.as_raw_fd();
         let mut event = libc::epoll_event {
@@ -54,8 +59,8 @@ impl EventPollerRegistry {
         )?;
         self.key_fds.insert(key, fd);
         
-        log::info!(
-            "Registered interest for fd {} with key {} and interest type {} in {}",
+        info!(
+            "cl-async: Registered interest for fd {} with key {} and interest type {} in {}",
             fd,
             key.as_u64(),
             interest_type.bits(),
@@ -85,8 +90,8 @@ impl EventPollerRegistry {
             EventPollerRegistryError::FailedToModifyInterest { source: e.into() }
         )?;
 
-        log::info!(
-            "Modified interest for fd {} with key {} and interest type {} in {}",
+        info!(
+            "cl-async: Modified interest for fd {} with key {} and interest type {} in {}",
             *fd,
             key.as_u64(),
             interest_type.bits(),
@@ -106,8 +111,8 @@ impl EventPollerRegistry {
             EventPollerRegistryError::FailedToDeregisterInterest { source: e.into() }
         )?;
 
-        log::info!(
-            "Deregistered interest for fd {} with key {} in {}",
+        info!(
+            "cl-async: Deregistered interest for fd {} with key {} in {}",
             fd,
             key.as_u64(),
             self.inner.as_raw_fd()
@@ -117,4 +122,3 @@ impl EventPollerRegistry {
     }
 
 }
-

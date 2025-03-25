@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use work_sender::WorkSenderError;
 
 use std::{
-    sync::{
+    collections::VecDeque, sync::{
         atomic::{
             AtomicU8, 
             Ordering
@@ -25,20 +25,18 @@ use crate::{
     events::{
         channel::{
             EventChannelError, 
-            EventReceiver
-        }, 
-        handler::{
-            registry::EventHandlerRegistryError, 
-            EventHandlerRegistry
-        }, 
-        poller::{
+            EventChannelReceiver
+        }, poller::{
             registry::EventPollerRegistryError, 
             EventPollerError, 
             EventPollerRegistry, 
             InterestType
         }, 
+        Event, 
         EventChannel, 
-        EventPoller
+        EventPoller, 
+        EventQueueRegistry, 
+        EventSource
     }, io::{
         context::IOContextError, 
         submission::IOSubmissionError, 
@@ -47,11 +45,11 @@ use crate::{
         IOContext, 
         IOOperation, 
         IOSubmissionQueue
-    }, task::{
+    }, 
+    task::{
         executor::ExecutorError, 
         Executor
-    }, 
-    Event, 
+    },  
     Key, 
     OSError, 
     Task
@@ -92,10 +90,7 @@ pub enum WorkerError {
     TempDataUnavailable,
 
     #[error("Executor error: {0}")]
-    ExecutorError(#[from] ExecutorError),
-
-    #[error("Event Handler Registry error: {0}")]
-    EventHandlerRegistryError(#[from] EventHandlerRegistryError),
+    ExecutorError(#[from] ExecutorError)
 }
 
 pub struct WorkerIOSubmissionHandle {
@@ -154,8 +149,8 @@ struct WorkerTempData {
     poller: EventPoller,
     executor: Executor,
     io_context: IOContext,
-    message_channel_key_and_receiver: (Key, EventReceiver),
-    io_channel_key_and_receiver: (Key, EventReceiver),
+    message_channel_key_and_receiver: (Key, EventChannelReceiver),
+    io_channel_key_and_receiver: (Key, EventChannelReceiver),
 }
 
 pub struct Worker {
@@ -164,7 +159,7 @@ pub struct Worker {
     handle: Option<JoinHandle<()>>,
     sender: WorkSender,
     event_registry: EventPollerRegistry,
-    callback_registry: Arc<EventHandlerRegistry>,
+    queue_registry: EventQueueRegistry,
     io_completion_queue: IOCompletionQueue,
     io_submission_queue: IOSubmissionQueue,
     temp_data: Mutex<Option<WorkerTempData>>,
@@ -180,22 +175,24 @@ impl Worker {
         let poller = EventPoller::new(POLLER_BUFFER_SIZE)?;
         let event_registry = poller.registry();
         let message_channel_key: Key = event_registry.register_interest(
-            &message_channel,
+            EventSource::new(&message_channel),
             InterestType::READ
         )?;
         let executor = Executor::new(sender.clone());
         
-        let mut io_context = IOContext::default(256)?;
+        let mut io_context = IOContext::new(256)?;
         let io_channel = EventChannel::new()?;
         io_context.register_event_channel(&io_channel)?;
         let io_channel_key = event_registry.register_interest(
-            &io_channel,
+            EventSource::new(&io_channel),
             InterestType::READ
         )?;
 
         let io_submission_queue = IOSubmissionQueue::new(
             sender.clone()
         );
+
+        let queue_registry = EventQueueRegistry::new();
         
 
         Ok(Self {
@@ -204,7 +201,7 @@ impl Worker {
             handle: None,
             sender,
             event_registry,
-            callback_registry: Arc::new(EventHandlerRegistry::new()),
+            queue_registry,
             io_completion_queue: io_context.completion().clone(),
             io_submission_queue,
             temp_data: Mutex::new(Some(WorkerTempData {
@@ -225,7 +222,7 @@ impl Worker {
     }
 
     pub fn event_registry(&self) -> &EventPollerRegistry { &self.event_registry }
-    pub fn callback_registry(&self) -> &EventHandlerRegistry { &self.callback_registry }
+    pub fn queue_registry(&self) -> &EventQueueRegistry { &self.queue_registry }
     pub fn id(&self) -> usize { self.id }
 
     pub fn submit_io_operations(
@@ -256,27 +253,27 @@ impl Worker {
 
         let state = Arc::clone(&self.state);
         let id = self.id;
-        let callback_registry = Arc::clone(&self.callback_registry);
+        let queue_registry = self.queue_registry.clone();
         let temp_data = match self.temp_data.lock().take() {
             Some(temp_data) => temp_data,
             None => return Err(WorkerError::TempDataUnavailable),
         };
 
         self.handle = Some(std::thread::spawn(move || {
-            log::info!("cl-async: Worker {} starting", id);
+            info!("cl-async: Worker {} starting", id);
             if let Err(e) = Self::worker_loop(
                 id,
                 Arc::clone(&state),
                 temp_data.poller,
                 temp_data.executor,
                 temp_data.receiver,
-                callback_registry,
+                queue_registry,
                 temp_data.io_context,
                 temp_data.message_channel_key_and_receiver,
                 temp_data.io_channel_key_and_receiver
-            ) { log::error!("Worker {}: {}", id, e) }
+            ) { error!("cl-async: Worker {}: {}", id, e) }
             Self::set_state(&state, WorkerState::Stopped);
-            log::info!("cl-async: Worker {} stopped", id);
+            info!("cl-async: Worker {} stopped", id);
         }));
 
         Ok(())
@@ -309,13 +306,13 @@ impl Worker {
         )
     }
 
-    pub fn kill(&mut self) -> Result<(), WorkerError> {
+    pub fn kill(&self) -> Result<(), WorkerError> {
         if !self.is_running() { return Err(WorkerError::NotRunning(self.id)) }
         self.sender.send_message(Message::Kill)?;
         Ok(())
     }
 
-    pub fn shutdown(&mut self) -> Result<(), WorkerError> {
+    pub fn shutdown(&self) -> Result<(), WorkerError> {
         if !self.is_running() { return Err(WorkerError::NotRunning(self.id)) }
         self.sender.send_message(Message::Shutdown)?;
         Ok(())
@@ -339,16 +336,17 @@ impl Worker {
         mut poller: EventPoller,
         mut executor: Executor,
         rx: crossbeam_channel::Receiver<Message>,
-        callback_registry: Arc<EventHandlerRegistry>,
+        queue_registry: EventQueueRegistry,
         mut io_context: IOContext,
-        message_channel_key_and_receiver: (Key, EventReceiver),
-        io_channel_key_and_receiver: (Key, EventReceiver),
+        message_channel_key_and_receiver: (Key, EventChannelReceiver),
+        io_channel_key_and_receiver: (Key, EventChannelReceiver),
     ) -> Result<(), WorkerError> {
 
         let mut events: Vec<Event> = Vec::with_capacity(1024);
+        let mut queues_to_wake = VecDeque::new();
         let mut should_recv: bool;
         let mut should_complete_io: bool;
-        let registry = poller.registry();
+        let mut should_submit_io: bool;
 
         let (message_channel_key, message_channel_receiver) = message_channel_key_and_receiver;
         let (io_channel_key, io_channel_receiver) = io_channel_key_and_receiver;
@@ -357,6 +355,7 @@ impl Worker {
 
             should_recv = false;
             should_complete_io = false;
+            should_submit_io = false;
 
             Self::set_state(&state, WorkerState::Idle);
             match poller.poll_events(
@@ -367,10 +366,6 @@ impl Worker {
                 Err(EventPollerError::FailedToPollEvents { source }) => {
                     match source {
                         OSError::OperationInterrupted => {
-                            log::warn!(
-                                "cl-async: Worker {} interrupted; edge-triggered events may be lost",
-                                id
-                            );
                             continue;
                         },
                         _ => {
@@ -400,22 +395,14 @@ impl Worker {
                     continue;
                 }
                 
-                 match callback_registry.run(
-                    key, 
-                    *event,
-                    registry.clone()
-                ) {
-                    Ok(task_opt) => {
-                        if let Some(task) = task_opt { 
-                            executor.spawn(task);
-                        }
-                    },
-                    Err(EventHandlerRegistryError::KeyNotFound) => {},
-                    Err(e) => {
-                        log::error!("Worker {}: {}", id, e);
-                    }
-                } 
+                if queue_registry.push_event(key, *event) {
+                    queues_to_wake.push_back(key);
+                }
 
+            }
+
+            while let Some(key) = queues_to_wake.pop_front() {
+                queue_registry.wake(key);
             }
 
             events.clear();
@@ -437,11 +424,13 @@ impl Worker {
                         Message::WakeTask(task_id) => executor.wake_task(task_id),
                         Message::SubmitIOEntry(io_entry) => {
                             io_context.prepare_submission(io_entry)?;
+                            should_submit_io = true;
                         }
                         Message::SubmitIOEntries(io_entries) => {
                             for entry in io_entries {
                                 io_context.prepare_submission(entry)?;
                             }
+                            should_submit_io = true;
                         },
                         Message::Kill => { return Ok(()); },
                         Message::Shutdown => {
@@ -453,7 +442,7 @@ impl Worker {
                 message_channel_receiver.drain()?;
             }
 
-            io_context.submit()?;
+            if should_submit_io { io_context.submit()?; }
 
             if Self::_is_state(&state, WorkerState::Stopping) {
                 break;
@@ -462,7 +451,7 @@ impl Worker {
             while executor.has_ready_tasks() { executor.run_ready_tasks(); }
         }
 
-        log::info!("Worker {} shutting down...", id);
+        info!("cl-async: Worker {} shutting down...", id);
 
         io_channel_receiver.drain()?;
         message_channel_receiver.drain()?;

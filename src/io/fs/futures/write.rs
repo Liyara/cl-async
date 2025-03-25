@@ -20,7 +20,12 @@ use crate::{
     worker::WorkerIOSubmissionHandle
 };
 
-use super::{FileFuture, FileMultiFuture, JoinableFileFuture, ToFileFuture};
+use super::{
+    FileFuture, 
+    FileMultiFuture, 
+    JoinableFileFuture, 
+    ToFileFuture
+};
 
 pub struct FileWriteFuture {
     fd: Arc<OwnedFd>,

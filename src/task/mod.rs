@@ -1,4 +1,10 @@
-use std::{pin::Pin, task::{Context, Poll}};
+use std::{
+    pin::Pin, 
+    task::{
+        Context, 
+        Poll
+    }
+};
 
 pub mod executor;
 pub mod id;
@@ -23,5 +29,9 @@ impl Task {
 
     pub fn poll(&mut self, cx: &mut Context) -> Poll<()> {
         self.future.as_mut().poll(cx)
+    }
+
+    pub fn unwrap(self) -> impl Future<Output = ()> {
+        self.future
     }
 }

@@ -1,10 +1,23 @@
-use std::{ffi::CString, os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}, sync::Arc};
+use std::{
+    ffi::CString, 
+    os::fd::{
+        AsRawFd, 
+        FromRawFd, 
+        OwnedFd, 
+        RawFd
+    }, 
+    sync::Arc
+};
 
 use thiserror::Error;
 use bitflags::bitflags;
-use crate::{syscall, OSError};
 
-use super::futures::{FileReadFuture, FileWriteFuture};
+use crate::OSError;
+
+use super::futures::{
+    FileReadFuture, 
+    FileWriteFuture
+};
 
 
 #[derive(Debug, Error)]
