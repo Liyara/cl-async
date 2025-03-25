@@ -54,4 +54,12 @@ impl Event {
     pub fn is_rdhup(&self) -> bool {
         self.event_type.contains(EventType::RDHUP)
     }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.event_type.contains(EventType::SHUTDOWN)
+    }
+
+    pub fn is_kill(&self) -> bool {
+        self.event_type.contains(EventType::KILL)
+    }
 }

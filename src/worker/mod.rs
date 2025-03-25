@@ -36,7 +36,8 @@ use crate::{
         EventChannel, 
         EventPoller, 
         EventQueueRegistry, 
-        EventSource
+        EventSource, 
+        EventType
     }, io::{
         context::IOContextError, 
         submission::IOSubmissionError, 
@@ -395,7 +396,7 @@ impl Worker {
                     continue;
                 }
                 
-                if queue_registry.push_event(key, *event) {
+                if queue_registry.push_event(*event) {
                     queues_to_wake.push_back(key);
                 }
 
@@ -432,7 +433,10 @@ impl Worker {
                             }
                             should_submit_io = true;
                         },
-                        Message::Kill => { return Ok(()); },
+                        Message::Kill => { 
+                            queue_registry.broadcast_and_wake(EventType::KILL);
+                            return Ok(()); 
+                        },
                         Message::Shutdown => {
                             Self::set_state(&state, WorkerState::Stopping);
                         }
@@ -444,11 +448,12 @@ impl Worker {
 
             if should_submit_io { io_context.submit()?; }
 
+            while executor.has_ready_tasks() { executor.run_ready_tasks(); }
+
             if Self::_is_state(&state, WorkerState::Stopping) {
+                queue_registry.broadcast_and_wake(EventType::SHUTDOWN);
                 break;
             }
-
-            while executor.has_ready_tasks() { executor.run_ready_tasks(); }
         }
 
         info!("cl-async: Worker {} shutting down...", id);
@@ -474,7 +479,10 @@ impl Worker {
                             io_context.prepare_submission(entry)?;
                         }
                     },
-                    Message::Kill => { return Ok(()); },
+                    Message::Kill => {
+                        queue_registry.broadcast_and_wake(EventType::KILL);
+                        return Ok(()); 
+                    },
                     _ => ()
                 }
             };
@@ -485,6 +493,8 @@ impl Worker {
             while executor.has_ready_tasks() { executor.run_ready_tasks(); }
             if !executor.has_running_tasks() { break; }
         }
+
+        queue_registry.clear();
 
         Ok(())
     }

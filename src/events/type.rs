@@ -9,6 +9,8 @@ bitflags! {
         const ERROR = libc::EPOLLERR;
         const HUP = libc::EPOLLHUP;
         const RDHUP = libc::EPOLLRDHUP;
+        const SHUTDOWN = libc::EPOLLRDHUP << 1;
+        const KILL = libc::EPOLLRDHUP << 2;
     }
 }
 
@@ -29,6 +31,12 @@ impl fmt::Display for EventType {
         }
         if self.contains(EventType::RDHUP) {
             flags.push("RDHUP");
+        }
+        if self.contains(EventType::SHUTDOWN) {
+            flags.push("SHUTDOWN");
+        }
+        if self.contains(EventType::KILL) {
+            flags.push("KILL");
         }
         write!(f, "EventType {{ {:?} }}", flags.join(" | "))
     }

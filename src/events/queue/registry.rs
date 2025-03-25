@@ -49,11 +49,50 @@ impl EventQueueRegistry {
         self.inner.registry.iter().map(|v| *v.key()).collect()
     }
 
-    pub fn push_event(&self, key: Key, event: crate::events::Event) -> bool {
-        if let Some(queue) = self.inner.registry.get(&key) {
+    pub fn push_event(&self, event: crate::events::Event) -> bool {
+        if let Some(queue) = self.inner.registry.get(&event.key) {
             queue.push(event);
             true
         } else { false }
+    }
+
+    pub fn push_and_wake(&self, event: crate::events::Event) -> bool {
+        if let Some(queue) = self.inner.registry.get(&event.key) {
+            queue.push(event);
+            queue.wake();
+            true
+        } else { false }
+    }
+
+    pub fn clear(&self) {
+        self.inner.registry.clear();
+    }
+
+    pub fn broadcast(&self, event_type: crate::events::EventType) {
+        for queue in self.inner.registry.iter() {
+            let event = crate::events::Event {
+                event_type,
+                key: *queue.key(),
+            };
+            queue.value().push(event);
+        }
+    }
+
+    pub fn broadcast_and_wake(&self, event_type: crate::events::EventType) {
+        for queue in self.inner.registry.iter() {
+            let event = crate::events::Event {
+                event_type,
+                key: *queue.key(),
+            };
+            queue.value().push(event);
+            queue.value().wake();
+        }
+    }
+
+    pub fn wake_all(&self) {
+        for queue in self.inner.registry.iter() {
+            queue.value().wake();
+        }
     }
 
 }
