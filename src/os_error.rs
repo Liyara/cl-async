@@ -2,7 +2,7 @@ use thiserror::Error;
 
 
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum OSError {
 
     #[error("Maximum number of file descriptors reached")]
@@ -11,14 +11,14 @@ pub enum OSError {
     #[error("Not enough memory")]
     NotEnoughMemory,
 
-    #[error("File could not be read")]
-    FileCouldNotBeRead,
+    #[error("This operation is forbidden on this object")]
+    OperationForbidden,
 
     #[error("Invalid file descriptor")]
     InvalidFd,
 
-    #[error("File descriptor is already registered with this resource")]
-    FdAlreadyRegistered,
+    #[error("Attempted to create a resource which already exists")]
+    AlreadyExists,
 
     #[error("Invalid pointer")]
     InvalidPointer,
@@ -53,9 +53,9 @@ impl From<std::io::Error> for OSError {
            libc::EINVAL => OSError::InvalidOperation,
            libc::EMFILE | libc::ENFILE => OSError::MaxFdReached,
            libc::ENOMEM => OSError::NotEnoughMemory,
-           libc::EACCES => OSError::FileCouldNotBeRead,
+           libc::EACCES => OSError::OperationForbidden,
            libc::EBADF => OSError::InvalidFd,
-           libc::EEXIST => OSError::FdAlreadyRegistered,
+           libc::EEXIST => OSError::AlreadyExists,
            libc::EFAULT => OSError::InvalidPointer,
            libc::ENOENT => OSError::FdNotRegistered,
            libc::EPERM => OSError::PermissionDenied,

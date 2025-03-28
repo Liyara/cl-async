@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 
 [features]
-default = ["log-info", "log-warn", "log-error"]
+default = ["log-warn", "log-error"]
 log-info = ["log", "cl-log"]
 log-warn = ["log", "cl-log"]
 log-error = ["log", "cl-log"]

@@ -104,7 +104,7 @@ impl ThreadPool {
         handler: F
     ) -> Result<(), PoolError>
     where
-        F: FnOnce(crate::events::EventReceiver) -> Fut + Send + Sync + 'static,
+        F: FnOnce(crate::events::EventReceiver) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static
     {
         info!("cl-async: Registering event source {}", source);
@@ -112,7 +112,6 @@ impl ThreadPool {
         let worker = self.get_next_worker()?;
         let event_registry = worker.event_registry().clone();
         let event_queue_registry = worker.queue_registry().clone();
-        
 
         let task = Task::new(async move {
 

@@ -17,6 +17,7 @@ pub mod io;
 pub mod events;
 pub mod sync;
 pub mod timing;
+pub mod net;
 
 pub use key::Key;
 pub use task::Task;
@@ -116,7 +117,7 @@ pub fn register_event_source<F, Fut>(
     handler: F
 ) -> Result<()>
 where
-    F: FnOnce(events::EventReceiver) -> Fut + Send + Sync + 'static,
+    F: FnOnce(events::EventReceiver) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static
 { Ok(pool().register_event_source(source, interest_type, handler)?) }
 
