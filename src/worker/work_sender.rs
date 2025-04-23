@@ -12,6 +12,9 @@ pub enum WorkSenderError {
 
     #[error("Failed to signal message: {0}")]
     SignalError(#[from] EventChannelError),
+
+    #[error("Woken task queue is full")]
+    WokenTaskQueueFull,
 }
 
 #[derive(Debug, Clone)]

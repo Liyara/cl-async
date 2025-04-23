@@ -1,4 +1,7 @@
+#![feature(decl_macro)]
+
 use once_cell::sync::OnceCell;
+use pool::PoolError;
 use thiserror::Error;
 
 #[macro_use]
@@ -18,13 +21,14 @@ pub mod events;
 pub mod sync;
 pub mod timing;
 pub mod net;
+pub mod notifications;
 
 pub use key::Key;
 pub use task::Task;
 
 pub (crate) use worker::Worker;
 pub (crate) use pool::ThreadPool;
-pub (crate) use os_error::OSError;
+pub use os_error::OsError;
 
 
 #[derive(Debug, Error)]
@@ -35,6 +39,15 @@ pub enum Error {
     #[error("Pool error: {0}")]
     Pool(#[from] pool::PoolError),
 
+    #[error("OS error: {0}")]
+    Os(#[from] OsError),
+
+    #[error("IO error: {0}")]
+    Io(#[from] io::IoError),
+
+    #[error("Network error: {0}")]
+    Network(#[from] net::NetworkError),
+
     #[error("Failed to acquire pool lock")]
     LockError,
 
@@ -42,7 +55,7 @@ pub enum Error {
     AlreadyInitialized,
 }
 
-type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 static POOL: OnceCell<ThreadPool> = OnceCell::new();
 
@@ -93,21 +106,21 @@ pub fn kill() -> Result<()> { Ok(pool().kill()?) }
 
 // Returns the number of threads in the pool.
 // This should always equal the number of CPUs.
-pub fn num_threads() -> Result<usize> { Ok(pool().num_threads()) }
+pub fn num_threads() -> usize { pool().num_threads() }
 
 // Submits an I/O operation to the pool.
 pub fn submit_io_operation(
-    operation: io::IOOperation, 
+    operation: io::IoOperation, 
     waker: Option<std::task::Waker>
-) -> Result<worker::WorkerIOSubmissionHandle> {
+) -> std::result::Result<worker::WorkerIOSubmissionHandle, PoolError> {
     Ok(pool().submit_io_operation(operation, waker)?)
 }
 
 // Submits multiple I/O operations to the pool.
 pub fn submit_io_operations(
-    operations: Vec<io::IOOperation>, 
+    operations: Vec<io::IoOperation>, 
     waker: Option<std::task::Waker>
-) -> Result<worker::WorkerMultipleIOSubmissionHandle> {
+) -> std::result::Result<worker::WorkerMultipleIOSubmissionHandle, PoolError> {
     Ok(pool().submit_io_operations(operations, waker)?)
 }
 
@@ -123,4 +136,18 @@ where
 
 pub fn sleep(duration: std::time::Duration) -> timing::futures::SleepFuture {
     timing::futures::SleepFuture::new(duration)
+}
+
+pub fn get_worker_handle(id: usize) -> Result<worker::WorkerHandle> {
+    Ok(pool().get_worker_handle(id)?)
+}
+
+pub fn next_worker_id() -> usize {
+    pool().next_worker_id()
+}
+
+pub fn notify_on(
+    flags: notifications::NotificationFlags,
+) -> Result<notifications::Subscription> {
+    Ok(pool().notify_on(flags)?)
 }

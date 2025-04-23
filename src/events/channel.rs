@@ -113,6 +113,12 @@ impl EventChannelSender {
     }
 }
 
+impl AsRawFd for EventChannelSender {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EventChannelReceiver {
     fd: Arc<OwnedFd>,
@@ -162,4 +168,10 @@ impl EventChannelReceiver {
         Ok(())
     }
 
+}
+
+impl AsRawFd for EventChannelReceiver {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
 }

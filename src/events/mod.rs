@@ -11,6 +11,8 @@ pub mod futures;
 
 pub use r#type::EventType;
 pub use channel::EventChannel;
+pub use channel::EventChannelSender;
+pub use channel::EventChannelReceiver;
 pub use poller::EventPoller;
 pub use poller::InterestType;
 pub use source::EventSource;

@@ -4,5 +4,8 @@
 /src/bin/*
 /flamegraph.svg
 /perf.data
+/perf-report.txt
 /perf.data.old
+/out.perf
 /test.txt
+/test.c

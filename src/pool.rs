@@ -12,15 +12,9 @@ use crate::{
         EventQueue, 
         EventReceiver, 
         EventSource
-    }, 
-    io::IOOperation, 
-    worker::{
-        WorkerError, 
-        WorkerIOSubmissionHandle, 
-        WorkerState
-    }, 
-    Task, 
-    Worker
+    }, io::IoOperation, notifications:: NotificationFlags, worker::{
+        WorkerError, WorkerHandle, WorkerIOSubmissionHandle, WorkerState
+    }, Task, Worker
 };
 
 #[derive(Debug, Error)]
@@ -50,12 +44,18 @@ pub struct ThreadPool {
 }
 
 impl ThreadPool {
+
     pub (crate) fn new(n_threads: usize) -> Self {
+
         let n_threads = std::cmp::max(2, n_threads);
-        Self { n_threads, workers: DashMap::new() }
+
+        Self { 
+            n_threads, 
+            workers: DashMap::new()
+        }
     }
 
-    fn next_worker_id(&'static self) -> usize {
+    pub fn next_worker_id(&'static self) -> usize {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         id % self.n_threads
@@ -95,6 +95,11 @@ impl ThreadPool {
     pub fn spawn_multiple(&'static self, tasks: Vec<Task>) -> Result<(), PoolError> {
         info!("cl-async: Spawning {} tasks", tasks.len());
         Ok(self.get_next_worker()?.spawn_multiple(tasks)?)
+    }
+
+    pub fn get_worker_handle(&'static self, id: usize) -> Result<WorkerHandle, PoolError> {
+        let worker = self.workers.get(&id).ok_or(PoolError::WorkerNotFound(id))?;
+        Ok(worker.as_handle())
     }
 
     pub fn register_event_source<F, Fut>(
@@ -144,7 +149,7 @@ impl ThreadPool {
 
     pub fn submit_io_operation(
         &'static self,
-        operation: IOOperation, 
+        operation: IoOperation, 
         waker: Option<std::task::Waker>
     ) -> Result<WorkerIOSubmissionHandle, PoolError> {
         let worker = self.get_next_worker()?;
@@ -154,7 +159,7 @@ impl ThreadPool {
 
     pub fn submit_io_operations(
         &'static self,
-        operations: Vec<IOOperation>, 
+        operations: Vec<IoOperation>, 
         waker: Option<std::task::Waker>
     ) -> Result<crate::worker::WorkerMultipleIOSubmissionHandle, PoolError> {
         let worker = self.get_next_worker()?;
@@ -211,6 +216,14 @@ impl ThreadPool {
 
     pub fn num_threads(&'static self) -> usize {
         self.n_threads
+    }
+
+    pub fn notify_on(
+        &'static self,
+        flags: NotificationFlags
+    ) -> Result<crate::notifications::Subscription, PoolError> {
+        let worker = self.get_next_worker()?;
+        Ok(worker.notify_on(flags)?)
     }
             
 }

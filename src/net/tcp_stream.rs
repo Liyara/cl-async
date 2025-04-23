@@ -1,148 +1,133 @@
-use std::{os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}, sync::Arc};
+use std::os::fd::{
+    AsRawFd, 
+    FromRawFd, 
+    RawFd
+};
 
-use crate::io::fs::File;
+use crate::io::{
+    operation::future::{
+        IoOperationFuture, IoVoidFuture, __async_impl_copyable__, __async_impl_receiver__, __async_impl_sender__
+    }, IoError, IoOperation, IoResult, OwnedFdAsync
+};
 
-use super::{Address, NetworkError, SocketConfigurable, SocketOption};
+use super::{
+    LocalAddress, NetworkError, PeerAddress, SocketConfigurable, SocketOption
+};
 
-#[derive(Debug, Clone)]
 pub struct TcpStream {
-    fd: Arc<OwnedFd>,
-    addr: Address
-}
-
-pub enum ReadResult {
-    Closed, // No data, and the connection will not send any more data
-    Received(usize), // The connection sent data
-    WouldBlock // No data, but the connection may send more data at a later time
-}
-
-pub enum WriteResult {
-    Sent, // The data was sent
-    Partial(usize), // Some or all of the data was not sent
-    WouldBlock // The data was unsable to send because the OS buffer is full
-}
-
-#[repr(i32)]
-pub enum ShutdownType {
-    Read = libc::SHUT_RD,
-    Write = libc::SHUT_WR,
-    Both = libc::SHUT_RDWR,
+    fd: OwnedFdAsync,
+    local_addr: Option<LocalAddress>,
+    peer_addr: Option<PeerAddress>
 }
 
 impl TcpStream {
 
-    pub (super) fn new(fd: RawFd, addr: libc::sockaddr_in) -> Self {
+    pub (super) fn new(
+        fd: RawFd, 
+        local_addr: Option<LocalAddress>,
+        peer_addr: Option<PeerAddress>
+    ) -> Self {
         Self {
-            fd: Arc::new(unsafe { OwnedFd::from_raw_fd(fd) }),
-            addr: addr.into()
+            fd: unsafe { OwnedFdAsync::from_raw_fd(fd) },
+            local_addr,
+            peer_addr
         }
     }
 
-    pub fn address(&self) -> &Address {
-        &self.addr
-    }
+    async fn connect_client(
+        fd: &OwnedFdAsync,
+        addr: &PeerAddress
+    ) -> Result<(), IoError> {
 
-    pub fn read(&self, buf: &mut [u8]) -> Result<ReadResult, NetworkError> {
-        let result = syscall!(recv(
-            self.fd.as_raw_fd(),
-            buf.as_mut_ptr() as *mut libc::c_void,
-            buf.len(),
-            0
-        ));
+        IoVoidFuture::new(
+            IoOperation::connect(fd, addr.clone())?
+        ).await?;
 
-        if let Err(os_err) = result {
-            let raw_err = os_err.raw_os_error();
-            if
-                raw_err == Some(libc::EAGAIN) ||
-                raw_err == Some(libc::EWOULDBLOCK)
-            { Ok(ReadResult::WouldBlock) }
-            else { Err(NetworkError::SocketReadError(os_err.into())) }
-        } else {
-            let bytes = result.unwrap();
-            if bytes == 0 { Ok(ReadResult::Closed) }
-            else { Ok(ReadResult::Received(bytes as usize)) }
-        }
-    }
-
-    pub fn write(&self, data: &[u8]) -> Result<WriteResult, NetworkError> {
-        let result = syscall!(send(
-            self.fd.as_raw_fd(),
-            data.as_ptr() as *const libc::c_void,
-            data.len(),
-            0
-        ));
-
-        if let Err(os_err) = result {
-            let raw_err = os_err.raw_os_error();
-            if
-                raw_err == Some(libc::EAGAIN) ||
-                raw_err == Some(libc::EWOULDBLOCK)
-            { Ok(WriteResult::WouldBlock) }
-            else { Err(NetworkError::SocketWriteError(os_err.into())) }
-        } else {
-            let bytes = result.unwrap();
-            if bytes == data.len() as isize { Ok(WriteResult::Sent) }
-            else { Ok(WriteResult::Partial(bytes as usize)) }
-        }
-    }
-
-    pub fn shutdown(&self, shutdown_type: ShutdownType) -> Result<(), NetworkError> {
-        syscall!(shutdown(
-            self.fd.as_raw_fd(),
-            shutdown_type as i32
-        )).map_err(|e| NetworkError::SocketShutdownError(e.into()))?;
         Ok(())
     }
 
-    fn _copy(&self, file: &File, mut offset: libc::off_t, count: usize) -> Result<WriteResult, NetworkError> {
+    pub async fn new_client(peer_addr: PeerAddress) -> Result<Self, NetworkError> {
+
+        let fd = syscall!(socket(
+            libc::AF_INET,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0
+        )).map_err(|e| {
+            NetworkError::SocketCreateError(e.into())
+        })?;
+
+        let fd = unsafe { OwnedFdAsync::from_raw_fd(fd) };
+
+        Self::connect_client(&fd, &peer_addr).await.map_err(
+            |e| {
+                NetworkError::SocketConnectError {
+                    addr: peer_addr.clone().into_socket_address(),
+                    message: e.to_string()
+                }
+            }
+        )?;
+
+        Ok(Self {
+            fd,
+            local_addr: None,
+            peer_addr: Some(peer_addr)
+        })
+    }
+
+    pub fn query_local_address(&self) -> Result<LocalAddress, NetworkError> {
         
-        let result = syscall!(sendfile(
-            self.fd.as_raw_fd(),
-            file.as_raw_fd(),
-            &mut offset as *mut libc::off_t,
-            count
-        ));
+        Ok(
+            match self.local_addr {
+                Some(ref addr) => addr.clone(),
+                None => LocalAddress::try_from(&self.as_raw_fd())?
+            }
+        )
+    }
 
-        if let Err(os_err) = result {
-            let raw_err = os_err.raw_os_error();
-            if
-                raw_err == Some(libc::EAGAIN) ||
-                raw_err == Some(libc::EWOULDBLOCK)
-            { Ok(WriteResult::WouldBlock) }
-            else { Err(NetworkError::SocketWriteError(os_err.into())) }
-        } else {
-            let bytes = result.unwrap();
-            if bytes == count as isize { Ok(WriteResult::Sent) }
-            else { Ok(WriteResult::Partial(bytes as usize)) }
+    pub fn query_peer_address(&self) -> Result<PeerAddress, NetworkError> {
+        
+        Ok(
+            match self.peer_addr {
+                Some(ref addr) => addr.clone(),
+                None => PeerAddress::try_from(&self.as_raw_fd())?
+            }
+        )
+    }
+
+    pub fn address_local(&mut self) -> Result<&LocalAddress, NetworkError> {
+        
+        if self.local_addr.is_none() {
+            self.local_addr = Some(LocalAddress::try_from(&self.as_raw_fd())?);
         }
+
+        Ok(self.local_addr.as_ref().unwrap())
     }
 
-    pub fn copy_all(&self, file: &File) -> Result<WriteResult, NetworkError> {
-        let len = file.len();
-        self._copy(file, 0, len)
-    }
-
-    pub fn copy_all_from(&self, file: &File, offset: usize) -> Result<WriteResult, NetworkError> {
-        let len = file.len();
-        if offset > len {
-            return Err(NetworkError::InvalidArgument(
-                "Offset is past the end of the file".to_string()
-            ));
+    pub fn address_peer(&mut self) -> Result<&PeerAddress, NetworkError> {
+        
+        if self.peer_addr.is_none() {
+            self.peer_addr = Some(PeerAddress::try_from(&self.as_raw_fd())?);
         }
-        self._copy(file, offset as libc::off_t, len - offset)
+
+        Ok(self.peer_addr.as_ref().unwrap())
     }
 
-    pub fn copy_bytes(&self, file: &File, count: usize) -> Result<WriteResult, NetworkError> {
-        self._copy(file, 0, count)
+    pub async fn shutdown(&self) -> IoResult<()> {
+        IoVoidFuture::new(
+            IoOperation::shutdown(self)
+        ).await
     }
 
-    pub fn copy_bytes_from(&self, file: &File, offset: usize, count: usize) -> Result<WriteResult, NetworkError> {
-        if offset + count > file.len() {
-            return Err(NetworkError::InvalidArgument(
-                "Call would read past the end of the file".to_string()
-            ));
-        }
-        self._copy(file, offset as libc::off_t, count)
+    pub async fn shutdown_read(&self) -> IoResult<()> {
+        IoVoidFuture::new(
+            IoOperation::shutdown_read(self)
+        ).await
+    }
+
+    pub async fn shutdown_write(&self) -> IoResult<()> {
+        IoVoidFuture::new(
+            IoOperation::shutdown_write(self)
+        ).await
     }
 
 }
@@ -159,3 +144,9 @@ impl AsRawFd for TcpStream {
         self.fd.as_raw_fd()
     }
 }
+
+__async_impl_receiver__!(TcpStream);
+__async_impl_sender__!(TcpStream);
+__async_impl_copyable__!(TcpStream);
+
+pub type IoAcceptFuture = IoOperationFuture<crate::net::TcpStream>;

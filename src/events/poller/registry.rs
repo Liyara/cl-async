@@ -7,7 +7,7 @@ use crate::{
     events::EventSource, 
     key::KeyGenerator, 
     Key, 
-    OSError
+    OsError
 };
 
 use super::InterestType;
@@ -17,17 +17,17 @@ use super::InterestType;
 pub enum EventPollerRegistryError {
     #[error("Failed to register interest: {source}")]
     FailedToRegisterInterest {
-        source: OSError,
+        source: OsError,
     },
 
     #[error("Failed to modify interest: {source}")]
     FailedToModifyInterest {
-        source: OSError,
+        source: OsError,
     },
 
     #[error("Failed to deregister interest: {source}")]
     FailedToDeregisterInterest {
-        source: OSError,
+        source: OsError,
     },
 }
 
@@ -77,7 +77,7 @@ impl EventPollerRegistry {
     ) -> Result<(), EventPollerRegistryError> {
         let fd = self.key_fds.get(&key).ok_or(
             EventPollerRegistryError::FailedToModifyInterest {
-                source: OSError::FdNotRegistered
+                source: OsError::NotFound
             }
         )?;
         let mut event = libc::epoll_event {
@@ -104,7 +104,7 @@ impl EventPollerRegistry {
     pub fn deregister_interest(&self, key: Key) -> Result<(), EventPollerRegistryError> {
         let (key, fd) = self.key_fds.remove(&key).ok_or(
             EventPollerRegistryError::FailedToDeregisterInterest {
-                source: OSError::FdNotRegistered
+                source: OsError::NotFound
             }
         )?;
         syscall!(epoll_ctl(self.inner.as_raw_fd(), libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())).map_err(|e|

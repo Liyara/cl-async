@@ -1,267 +1,194 @@
 use std::{
-    ffi::CString, 
     os::fd::{
         AsRawFd, 
         FromRawFd, 
-        OwnedFd, 
         RawFd
+    }, 
+    path::{
+        Path, 
+        PathBuf
     }, 
     sync::Arc
 };
 
-use thiserror::Error;
-use bitflags::bitflags;
-
-use crate::OSError;
-
-use super::futures::{
-    FileReadFuture, 
-    FileWriteFuture
+use crate::{
+    io::{
+        completion::TryFromCompletion, operation::future::{
+            IoOperationFuture, 
+            IoReadFuture, 
+            IoVoidFuture, 
+            __async_impl_copyable__, 
+            __async_impl_readable__, 
+            __async_impl_writable__
+        }, operation_data::{
+            IoFileCreateMode, 
+            IoFileOpenSettings, 
+            IoStatxFlags, 
+            IoStatxMask
+        }, 
+        IoCompletion, 
+        IoError, 
+        IoOperation, 
+        IoOperationError, 
+        OwnedFdAsync
+    }, 
+    OsError
 };
 
+use super::{
+    Directory, 
+    FileSystemError, 
+    FileSystemResult, 
+    IoStatsFuture, 
+    Stats
+};
 
-#[derive(Debug, Error)]
-pub enum FileError {
-    
-    #[error("Failed to open file: {path}: {source}")]
-    FailedToOpenFile {
-        source: OSError,
-        path: String,
-    },
-
-    #[error("Failed to create CString: {source}")]
-    FailedToCreateCString {
-        source: std::ffi::NulError,
-    },
-
-    #[error("Failed to seek to offset: {offset}: {path}: ({source})")]
-    FailedToSeekToPositionInFile {
-        offset: usize,
-        path: String,
-        source: OSError,
-    },
-
-    #[error("Could not read file cursor position for file: {path}: {source}")]
-    FailedToReadFileCursorPosition {
-        path: String,
-        source: OSError,
-    },
-
-    #[error("Failed to reead file: {path}: {source}")]
-    FailedToReadFile {
-        path: String,
-        source: OSError,
-    },
-
-    #[error("Failed to write file: {path}: {source}")]
-    FailedToWriteFile {
-        path: String,
-        source: OSError,
-    },
-
-    #[error("Failed to submit read operation request: {source}")]
-    FailedToSubmitReadOperationRequest {
-        source: crate::Error,
-    },
-
-    #[error("Failed to submit write operation request: {source}")]
-    FailedToSubmitWriteOperationRequest {
-        source: crate::Error,
-    },
-
-    #[error("Failed to submit io operation request: {source}")]
-    FailedToSubmitIOOperationRequest {
-        source: crate::Error,
-    },
-
-    #[error("Invalid data for file write")]
-    InvalidWriteData,
-
-    #[error("IO Uring failure result: {0}")]
-    IOUringFailure(i32),
-
-    #[error("Unknown IO error occurred")]
-    UnknownIOError,
-}
-
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct AccessFlags: i32 {
-        const READ = 1 << 0;
-        const WRITE = 1 << 1;
-    }
-}
-
-impl AccessFlags {
-
-    pub fn is_readable(&self) -> bool {
-        self.contains(AccessFlags::READ)
-    }
-
-    pub fn is_writable(&self) -> bool {
-        self.contains(AccessFlags::WRITE)
-    }
-
-    fn as_libc_flags(&self) -> i32 {
-          let r = self.is_readable();
-          let w = self.is_writable();
-
-          if r && w { libc::O_RDWR } 
-          else if r { libc::O_RDONLY } 
-          else { libc::O_WRONLY }
-    }
-}
-
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct CreationFlags: i32 {
-        const NONE = 0;
-        const CREATE = libc::O_CREAT;
-        const OVERWRITE = libc::O_TRUNC;
-        const APPEND = libc::O_APPEND;
-    }
-}
+pub type IoFileFuture = IoOperationFuture<crate::io::fs::File>; 
 
 #[derive(Clone)]
 pub struct File {
-    fd: Arc<OwnedFd>,
-    access: AccessFlags,
-    path: String,
-    len: usize,
-    block_size: usize,
-    last_access_time: libc::time_t,
-    last_modification_time: libc::time_t,
+    fd: Arc<OwnedFdAsync>,
+    path: PathBuf,
+}
+
+impl TryFromCompletion for File {
+    fn try_from_completion(completion: crate::io::IoCompletion) -> Result<Self, crate::io::IoError> {
+        match completion {
+            IoCompletion::File(data) => {
+                let fd = data.fd;
+                let path = data.path;
+
+                Ok(unsafe { File::new(fd, path) })
+            },
+            _ => {
+                Err(IoOperationError::UnexpectedPollResult(
+                    String::from("File future got unexpected poll result")
+                ).into())
+            }
+        }
+    }
 }
 
 impl File {
-    pub fn open(
-        path: &str, 
-        access: AccessFlags, 
-        create: CreationFlags
-    ) -> Result<Self, FileError> {
-        
-        let path_cstr = CString::new(path).map_err(
-            |e| FileError::FailedToCreateCString {
-                source: e.into(),
+
+
+    unsafe fn new(fd: RawFd, path: PathBuf) -> Self {
+        let fd = Arc::new(
+            unsafe { OwnedFdAsync::from_raw_fd(fd) }
+        );
+        File { fd, path }
+    }
+
+    pub fn path(&self) -> &Path { &self.path }
+
+    pub async fn open(
+        path: &Path,
+        settings: IoFileOpenSettings
+    ) -> FileSystemResult<Self> {
+
+        if settings.is_dir() {
+            return Err(FileSystemError::InvalidFileOpenSettings(settings));
+        }
+
+        let r = Self::open_unchecked(
+            path, 
+            settings.clone()
+        ).await;
+
+        if let Err(FileSystemError::Io(
+            IoError::Operation(IoOperationError::Os(OsError::NotFound)))
+        ) = r {
+            if let IoFileCreateMode::Create(mode) = settings.mode() {
+                match path.parent() {
+                    Some(parent) => {
+                        Directory::mkdir_recursive(
+                            parent,
+                            *mode
+                        ).await?;
+
+                        return Self::open_unchecked(path, settings).await
+                    },
+                    None => {}
+                }
             }
-        )?;
 
-        let fd = syscall!(
-            open(path_cstr.as_ptr(), access.as_libc_flags() | create.bits())
-        ).map_err(|e| FileError::FailedToOpenFile {
-            source: e.into(),
-            path: path.to_string(),
-        })?;
+        }
 
-        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-
-        syscall!(
-            fstat(fd, &mut stat)
-        ).map_err(|e| FileError::FailedToOpenFile {
-            source: e.into(),
-            path: path.to_string(),
-        })?;
-
-        Ok(Self {
-            fd: Arc::new(unsafe { OwnedFd::from_raw_fd(fd) }),
-            access,
-            path: path.to_string(),
-            len: stat.st_size as usize,
-            block_size: stat.st_blksize as usize,
-            last_access_time: stat.st_atime,
-            last_modification_time: stat.st_mtime,
-        })
+        r
     }
 
-    pub fn set_position(&mut self, offset: usize) -> Result<(), FileError> {
-        syscall!(
-            lseek(self.fd.as_raw_fd(), offset as libc::off_t, libc::SEEK_SET)
-        ).map_err(|e| FileError::FailedToSeekToPositionInFile {
-            source: e.into(),
-            offset,
-            path: self.path.clone(),
-        })?;
+    pub async fn open_unchecked(
+        path: &Path,
+        settings: IoFileOpenSettings
+    ) -> FileSystemResult<Self> {
+        Ok(IoFileFuture::new(
+            IoOperation::open(
+                path, 
+                settings
+            )?
+        ).await?)
+    }
+
+    pub async fn set_path(
+        &mut self,
+        new_path: &Path,
+    ) -> FileSystemResult<()> {
+        IoVoidFuture::new(
+            IoOperation::rename(
+                self.path(),
+                new_path
+            )?
+        ).await?;
+
+        self.path = new_path.to_path_buf();
+
         Ok(())
     }
 
-    pub fn get_position(&self) -> Result<usize, FileError> {
-        let offset = syscall!(
-            lseek(self.fd.as_raw_fd(), 0, libc::SEEK_CUR)
-        ).map_err(|e| FileError::FailedToReadFileCursorPosition {
-            source: e.into(),
-            path: self.path.clone(),
-        })?;
-        Ok(offset as usize)
+    pub async fn stats(
+        &self,
+        flags: IoStatxFlags,
+        mask: IoStatxMask,
+    ) -> FileSystemResult<Stats> {
+        Ok(IoStatsFuture::new(
+            IoOperation::stats_fd(
+                self,
+                flags,
+                mask
+            )?
+        ).await?.into())
     }
 
-    pub fn move_position(&mut self, offset: isize) -> Result<(), FileError> {
-        syscall!(
-            lseek(self.fd.as_raw_fd(), offset as libc::off_t, libc::SEEK_CUR)
-        ).map_err(|e| FileError::FailedToSeekToPositionInFile {
-            source: e.into(),
-            offset: offset as usize,
-            path: self.path.clone(),
-        })?;
-        Ok(())
+    pub async fn read_all(&self) -> FileSystemResult<Vec<u8>> {
+        self.read_from(0).await
     }
 
-    pub fn last_access_time(&self) -> libc::time_t { self.last_access_time }
-    pub fn last_modification_time(&self) -> libc::time_t { self.last_modification_time }
-    pub fn len(&self) -> usize { self.len }
-    pub fn block_size(&self) -> usize { self.block_size }
+    pub async fn read_from(
+        &self,
+        offset: usize
+    ) -> FileSystemResult<Vec<u8>> {
+        
+        let size = match self.stats(
+            IoStatxFlags::DEFAULT,
+            IoStatxMask::SIZE
+        ).await?.size {
+            Some(size) => size,
+            None => return Err(FileSystemError::Io(
+                IoError::Operation(IoOperationError::NoData))
+            )
+        } as usize;
 
-    fn _read(&self, offset: Option<usize>, len: usize) -> Result<FileReadFuture, FileError> {
-        if !self.access.is_readable() {
-            return Err(FileError::FailedToReadFile {
-                path: self.path.clone(),
-                source: OSError::PermissionDenied,
-            });
-        }
-        Ok(FileReadFuture::new(
-            Arc::clone(&self.fd),
-            offset,
-            len,
-        ))
+        let len = size - offset;
+
+        Ok(IoReadFuture::new(
+            IoOperation::read_at(
+                self,
+                offset,
+                len
+            )
+        ).await?.into())
     }
-
-    fn _write(&self, offset: Option<usize>, data: Vec<u8>) -> Result<FileWriteFuture, FileError> {
-        if !self.access.is_writable() {
-            return Err(FileError::FailedToWriteFile {
-                path: self.path.clone(),
-                source: OSError::PermissionDenied,
-            });
-        }
-        Ok(FileWriteFuture::new(
-            self.fd.clone(),
-            offset,
-            data
-        ))
-    }
-
-    pub fn write(&self, data: Vec<u8>) -> Result<FileWriteFuture, FileError> {
-        self._write(None, data)
-    }
-
-    pub fn write_at(&self, offset: usize, data: Vec<u8>) -> Result<FileWriteFuture, FileError> {
-        self._write(Some(offset), data)
-    }
-
-    pub fn read_next(&self, len: usize) -> Result<FileReadFuture, FileError> {
-        self._read(None, len)
-    }
-
-    pub fn read_at(&self, offset: usize, len: usize) -> Result<FileReadFuture, FileError> {
-        self._read(Some(offset), len)
-    }
-
-    pub fn read_all(&self) -> Result<FileReadFuture, FileError> {
-        self.read_at(0, self.len)
-    }
-
-    pub fn read_remaining(&self) -> Result<FileReadFuture, FileError> {
-        self.read_next(self.len - self.get_position()?)
-    }
-
+    
     
 }
 
@@ -270,3 +197,7 @@ impl AsRawFd for File {
         self.fd.as_raw_fd()
     }
 }
+
+__async_impl_readable__!(File);
+__async_impl_writable__!(File);
+__async_impl_copyable__!(File);

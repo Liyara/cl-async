@@ -93,4 +93,10 @@ impl SocketOption {
 
 pub trait SocketConfigurable {
     fn set_opt(&self, option: SocketOption) -> Result<&Self, NetworkError> where Self: Sized;
+    fn set_opt_multi(&self, options: &[SocketOption]) -> Result<&Self, NetworkError> where Self: Sized {
+        for option in options {
+            self.set_opt(*option)?;
+        }
+        Ok(self)
+    }
 }

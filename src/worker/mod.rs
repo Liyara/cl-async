@@ -11,14 +11,13 @@ use parking_lot::Mutex;
 use work_sender::WorkSenderError;
 
 use std::{
-    collections::VecDeque, sync::{
+    collections::VecDeque, os::fd::RawFd, sync::{
         atomic::{
             AtomicU8, 
             Ordering
         }, 
         Arc
-    }, 
-    thread::JoinHandle
+    }, task::Poll, thread::JoinHandle
 };
 
 use crate::{
@@ -38,22 +37,10 @@ use crate::{
         EventQueueRegistry, 
         EventSource, 
         EventType
-    }, io::{
-        context::IOContextError, 
-        submission::IOSubmissionError, 
-        IOCompletion, 
-        IOCompletionQueue, 
-        IOContext, 
-        IOOperation, 
-        IOSubmissionQueue
-    }, 
-    task::{
+    }, io::{IoCompletionQueue, IoCompletionResult, IoContext, IoError, IoOperation, IoSubmissionQueue}, notifications::{self, Notification, NotificationFlags, Signal}, task::{
         executor::ExecutorError, 
         Executor
-    },  
-    Key, 
-    OSError, 
-    Task
+    }, Key, OsError, Task
 };
 
 static POLLER_BUFFER_SIZE: usize = 1024;
@@ -78,70 +65,75 @@ pub enum WorkerError {
     #[error("Event Channel error: {0}")]
     EventChannelError(#[from] EventChannelError),
 
-    #[error("IO Context error: {0}")]
-    IOContextError(#[from] IOContextError),
-
-    #[error("IO Submission Queue error: {0}")]
-    IOSubmissionQueueError(#[from] IOSubmissionError),
-
     #[error("Work Sender error: {0}")]
     WorkSenderError(#[from] WorkSenderError),
 
+    #[error("Worker IO error: {0}")]
+    IoError(#[from] IoError),
+
+    #[error("Worker OS error: {0}")]
+    OsError(#[from] OsError),
+
     #[error("Failed to acquire data for creating worker thread")]
     TempDataUnavailable,
+
+    #[error("Failed to broadcast notification")]
+    NotificationError(#[from] async_broadcast::SendError<Notification>),
 
     #[error("Executor error: {0}")]
     ExecutorError(#[from] ExecutorError)
 }
 
 pub struct WorkerIOSubmissionHandle {
-    key: Key,
-    completion_queue: IOCompletionQueue,
+    pub key: Key,
+    pub completion_queue: IoCompletionQueue,
 }
 
 impl WorkerIOSubmissionHandle {
-    fn new(key: Key, completion_queue: IOCompletionQueue) -> Self {
+    
+    fn new(key: Key, completion_queue: IoCompletionQueue) -> Self {
         Self { key, completion_queue }
     }
 
-    pub fn is_completed(&self) -> bool {
-        self.completion_queue.peek(self.key)
-    }
-
-    pub fn complete(self) -> Option<Result<IOCompletion, i32>> {
-        self.completion_queue.pop(self.key)
+    pub fn poll(
+        &self, 
+        cx: &mut std::task::Context<'_>
+    ) -> Poll<Option<IoCompletionResult>> {
+        self.completion_queue.poll(self.key, cx)
     }
 }
 
 pub struct WorkerMultipleIOSubmissionHandle {
-    keys: Vec<Key>,
-    completed_keys: usize,
-    completion_queue: IOCompletionQueue,
+    pub keys: Vec<Key>,
+    pub completion_queue: IoCompletionQueue,
 }
 
 impl WorkerMultipleIOSubmissionHandle {
-    fn new(keys: Vec<Key>, completion_queue: IOCompletionQueue) -> Self {
-        Self { keys, completed_keys: 0, completion_queue, }
+    fn new(keys: Vec<Key>, completion_queue: IoCompletionQueue) -> Self {
+        Self { keys, completion_queue, }
     }
+}
 
-    pub fn is_completed(&self) -> bool {
-        self.completed_keys == self.keys.len()
-    }
+pub struct WorkerHandle {
+    pub id: usize,
+    pub sender: WorkSender,
+    pub event_registry: EventPollerRegistry,
+    pub queue_registry: EventQueueRegistry,
+    pub io_completion_queue: IoCompletionQueue,
+    pub io_submission_queue: IoSubmissionQueue,
+    notification_receiver: async_broadcast::Receiver<Notification>,
+}
 
-    pub fn complete(&mut self) -> Vec<(Result<IOCompletion, i32>, usize)> {
-        let mut completed_keys = Vec::new();
-        let mut i  = 0;
-        for key in &self.keys {
-            match self.completion_queue.pop(*key) {
-                Some(val) => {
-                    completed_keys.push((val, i));
-                    self.completed_keys += 1;
-                }
-                None => continue,
-            };
-            i += 1;
-        }
-        completed_keys
+impl WorkerHandle {
+    pub fn notify_on(
+        &self, 
+        flags: NotificationFlags
+    ) -> Result<notifications::Subscription, WorkerError> {
+        let subscription = notifications::Subscription::new(
+            self.notification_receiver.clone(),
+            flags
+        );
+        Ok(subscription)
     }
 }
 
@@ -149,9 +141,10 @@ struct WorkerTempData {
     receiver: crossbeam_channel::Receiver<Message>,
     poller: EventPoller,
     executor: Executor,
-    io_context: IOContext,
+    io_context: IoContext,
     message_channel_key_and_receiver: (Key, EventChannelReceiver),
     io_channel_key_and_receiver: (Key, EventChannelReceiver),
+    notification_sender: async_broadcast::Sender<Notification>,
 }
 
 pub struct Worker {
@@ -161,8 +154,9 @@ pub struct Worker {
     sender: WorkSender,
     event_registry: EventPollerRegistry,
     queue_registry: EventQueueRegistry,
-    io_completion_queue: IOCompletionQueue,
-    io_submission_queue: IOSubmissionQueue,
+    io_completion_queue: IoCompletionQueue,
+    io_submission_queue: IoSubmissionQueue,
+    notification_receiver: async_broadcast::Receiver<Notification>,
     temp_data: Mutex<Option<WorkerTempData>>,
 }
 
@@ -181,7 +175,7 @@ impl Worker {
         )?;
         let executor = Executor::new(sender.clone());
         
-        let mut io_context = IOContext::new(256)?;
+        let mut io_context = IoContext::new(256)?;
         let io_channel = EventChannel::new()?;
         io_context.register_event_channel(&io_channel)?;
         let io_channel_key = event_registry.register_interest(
@@ -189,12 +183,16 @@ impl Worker {
             InterestType::READ
         )?;
 
-        let io_submission_queue = IOSubmissionQueue::new(
+        let io_submission_queue = IoSubmissionQueue::new(
             sender.clone()
         );
 
         let queue_registry = EventQueueRegistry::new();
         
+        let (
+            notification_sender, 
+            notification_receiver
+        ) = async_broadcast::broadcast(128);
 
         Ok(Self {
             id,
@@ -205,6 +203,7 @@ impl Worker {
             queue_registry,
             io_completion_queue: io_context.completion().clone(),
             io_submission_queue,
+            notification_receiver,
             temp_data: Mutex::new(Some(WorkerTempData {
                 receiver: rx,
                 poller,
@@ -217,7 +216,8 @@ impl Worker {
                 io_channel_key_and_receiver: (
                     io_channel_key,
                     io_channel.as_receiver()
-                )
+                ),
+                notification_sender,
             }))
         })
     }
@@ -226,22 +226,63 @@ impl Worker {
     pub fn queue_registry(&self) -> &EventQueueRegistry { &self.queue_registry }
     pub fn id(&self) -> usize { self.id }
 
+    fn _submit_io_operations(
+        &self,
+        operations: Vec<IoOperation>, 
+        waker: Option<std::task::Waker>
+    ) -> Result<Vec<Key>, IoError> {
+        let keys = self.io_submission_queue.submit_multiple(operations, waker)?;
+        Ok(keys)
+    }
+
     pub fn submit_io_operations(
         &self,
-        operations: Vec<IOOperation>, 
+        operations: Vec<IoOperation>, 
         waker: Option<std::task::Waker>
     ) -> Result<WorkerMultipleIOSubmissionHandle, WorkerError> {
-        let keys = self.io_submission_queue.submit_multiple(operations, waker)?;
+        let keys = self._submit_io_operations(operations, waker)?;
         Ok(WorkerMultipleIOSubmissionHandle::new(keys, self.io_completion_queue.clone()))
+    }
+
+    fn _submit_io_operation(
+        &self,
+        operation: IoOperation, 
+        waker: Option<std::task::Waker>
+    ) -> Result<Key, IoError> {
+        let key = self.io_submission_queue.submit(operation, waker)?;
+        Ok(key)
     }
 
     pub fn submit_io_operation(
         &self,
-        operation: IOOperation, 
+        operation: IoOperation, 
         waker: Option<std::task::Waker>
     ) -> Result<WorkerIOSubmissionHandle, WorkerError> {
-        let key = self.io_submission_queue.submit(operation, waker)?;
+        let key = self._submit_io_operation(operation, waker)?;
         Ok(WorkerIOSubmissionHandle::new(key, self.io_completion_queue.clone()))
+    }
+
+    pub fn as_handle(&self) -> WorkerHandle {
+        WorkerHandle {
+            id: self.id,
+            sender: self.sender.clone(),
+            event_registry: self.event_registry.clone(),
+            queue_registry: self.queue_registry.clone(),
+            io_completion_queue: self.io_completion_queue.clone(),
+            io_submission_queue: self.io_submission_queue.clone(),
+            notification_receiver: self.notification_receiver.clone(),
+        }
+    }
+
+    pub fn notify_on(
+        &self, 
+        flags: NotificationFlags
+    ) -> Result<notifications::Subscription, WorkerError> {
+        let subscription = notifications::Subscription::new(
+            self.notification_receiver.clone(),
+            flags
+        );
+        Ok(subscription)
     }
 
     pub fn start(&mut self) -> Result<(), WorkerError> {
@@ -268,11 +309,20 @@ impl Worker {
                 temp_data.poller,
                 temp_data.executor,
                 temp_data.receiver,
-                queue_registry,
+                queue_registry.clone(),
                 temp_data.io_context,
                 temp_data.message_channel_key_and_receiver,
-                temp_data.io_channel_key_and_receiver
+                temp_data.io_channel_key_and_receiver,
+                temp_data.notification_sender.clone()
             ) { error!("cl-async: Worker {}: {}", id, e) }
+            if !Self::_is_state(&state, WorkerState::Stopping) {
+                // Shutdown is not graceful.
+                if let Err(e) = Self::broadcast_notification(
+                    &temp_data.notification_sender, 
+                    Notification::Kill
+                ) { error!("cl-async: Worker {}: {}", id, e); }
+                queue_registry.broadcast_and_wake(EventType::KILL);
+            }
             Self::set_state(&state, WorkerState::Stopped);
             info!("cl-async: Worker {} stopped", id);
         }));
@@ -331,6 +381,34 @@ impl Worker {
         self.handle.take()
     }
 
+    unsafe fn block_async_signals() -> Result<RawFd, OsError> {
+        let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        
+        syscall!(sigemptyset(&mut mask))?;
+
+        for signal in Signal::handleable() {
+            syscall!(sigaddset(&mut mask, signal.into()))?;
+        }
+
+        syscall!(sigprocmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut()))?;
+
+        let sfd = syscall!(signalfd(
+            -1,
+            &mask,
+            libc::SFD_NONBLOCK | libc::SFD_CLOEXEC
+        ))?;
+
+        Ok(sfd)
+    }
+
+    fn broadcast_notification(
+        notification_sender: &async_broadcast::Sender<Notification>,
+        notification: Notification
+    ) -> Result<(), WorkerError> {
+        notification_sender.broadcast_blocking(notification)?;
+        Ok(())
+    }
+
     fn worker_loop(
         id: usize,
         state: Arc<AtomicU8>,
@@ -338,9 +416,10 @@ impl Worker {
         mut executor: Executor,
         rx: crossbeam_channel::Receiver<Message>,
         queue_registry: EventQueueRegistry,
-        mut io_context: IOContext,
+        mut io_context: IoContext,
         message_channel_key_and_receiver: (Key, EventChannelReceiver),
         io_channel_key_and_receiver: (Key, EventChannelReceiver),
+        notification_sender: async_broadcast::Sender<Notification>
     ) -> Result<(), WorkerError> {
 
         let mut events: Vec<Event> = Vec::with_capacity(1024);
@@ -351,6 +430,13 @@ impl Worker {
 
         let (message_channel_key, message_channel_receiver) = message_channel_key_and_receiver;
         let (io_channel_key, io_channel_receiver) = io_channel_key_and_receiver;
+
+        let sfd = unsafe { Self::block_async_signals()? };
+
+        let sfd_key = poller.registry().register_interest(
+            EventSource::new(&sfd),
+            InterestType::READ
+        )?;
 
         loop {
 
@@ -366,7 +452,7 @@ impl Worker {
                 Ok(()) => {},
                 Err(EventPollerError::FailedToPollEvents { source }) => {
                     match source {
-                        OSError::OperationInterrupted => {
+                        OsError::OperationInterrupted => {
                             continue;
                         },
                         _ => {
@@ -395,6 +481,68 @@ impl Worker {
                     should_complete_io = true;
                     continue;
                 }
+
+                if key == sfd_key {
+                    let mut siginfo: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
+                    
+                    let ret = syscall!(
+                        read(sfd, 
+                            &mut siginfo as *mut _ as *mut libc::c_void, 
+                            std::mem::size_of::<libc::signalfd_siginfo>()
+                        )
+                    ).map_err(|e| {
+                        WorkerError::OsError(OsError::from(e))
+                    })?;
+
+                    if ret != std::mem::size_of::<libc::signalfd_siginfo>() as isize {
+                        warn!("cl-async: Worker {}: Failed to read signal info", id);
+                        continue;
+                    }
+
+                    let signal = Signal::from(siginfo.ssi_signo as libc::c_int);
+
+                    let msg = match signal {
+                        Signal::Continue => Some(Notification::Continue),
+                        Signal::TtyIn | Signal::TtyOut => None,
+                        
+                        Signal::Interrupt
+                        | Signal::Terminate
+                        | Signal::Hangup
+                        | Signal::Quit
+                        | Signal::Alarm => {
+                            Some(Notification::Shutdown)
+                        },
+
+                        Signal::UserDefined(code) => {
+                            Some(Notification::Custom(code as u64))
+                        },
+
+                        Signal::ChildStopped => {
+                            Some(Notification::ChildStopped)
+                        },
+
+                        _ => {
+                            warn!("cl-async: Worker {}: Received signal: {}", id, signal);
+                            None
+                        }
+                    };
+
+                    if let Some(msg) = msg {
+                        match msg {
+                            Notification::Shutdown => {
+                                Self::set_state(&state, WorkerState::Stopping);
+                                queue_registry.broadcast_and_wake(EventType::SHUTDOWN);
+                            },
+                            Notification::Kill => {
+                                return Ok(());
+                            },
+                            _ => Self::broadcast_notification(
+                                &notification_sender,
+                                msg
+                            )?
+                        }
+                    }
+                }
                 
                 if queue_registry.push_event(*event) {
                     queues_to_wake.push_back(key);
@@ -410,7 +558,6 @@ impl Worker {
 
             if should_complete_io {
                 io_context.complete();
-                io_channel_receiver.drain()?;
             }
 
             if should_recv {
@@ -423,18 +570,17 @@ impl Worker {
                             for task in tasks { executor.spawn(task) }
                         }
                         Message::WakeTask(task_id) => executor.wake_task(task_id),
-                        Message::SubmitIOEntry(io_entry) => {
-                            io_context.prepare_submission(io_entry)?;
+                        Message::SubmitIO(submission) => {
+                            io_context.prepare_submission(submission)?;
                             should_submit_io = true;
                         }
-                        Message::SubmitIOEntries(io_entries) => {
-                            for entry in io_entries {
-                                io_context.prepare_submission(entry)?;
+                        Message::SubmitIOMulti(submissions) => {
+                            for submission in submissions {
+                                io_context.prepare_submission(submission)?;
                             }
                             should_submit_io = true;
                         },
                         Message::Kill => { 
-                            queue_registry.broadcast_and_wake(EventType::KILL);
                             return Ok(()); 
                         },
                         Message::Shutdown => {
@@ -443,7 +589,6 @@ impl Worker {
                         _ => ()
                     }
                 }
-                message_channel_receiver.drain()?;
             }
 
             if should_submit_io { io_context.submit()?; }
@@ -452,6 +597,10 @@ impl Worker {
 
             if Self::_is_state(&state, WorkerState::Stopping) {
                 queue_registry.broadcast_and_wake(EventType::SHUTDOWN);
+                Self::broadcast_notification(
+                    &notification_sender,
+                    Notification::Shutdown
+                )?;
                 break;
             }
         }
@@ -471,16 +620,16 @@ impl Worker {
                         for task in tasks { executor.spawn(task) }
                     }
                     Message::WakeTask(task_id) => executor.wake_task(task_id),
-                    Message::SubmitIOEntry(io_entry) => {
-                        io_context.prepare_submission(io_entry)?;
+                    Message::SubmitIO(submission) => {
+                        io_context.prepare_submission(submission)?;
                     }
-                    Message::SubmitIOEntries(io_entries) => {
-                        for entry in io_entries {
-                            io_context.prepare_submission(entry)?;
+                    Message::SubmitIOMulti(submissions) => {
+                        for submission in submissions {
+                            io_context.prepare_submission(submission)?;
                         }
                     },
                     Message::Kill => {
-                        queue_registry.broadcast_and_wake(EventType::KILL);
+                        Self::set_state(&state, WorkerState::Stopped);
                         return Ok(()); 
                     },
                     _ => ()

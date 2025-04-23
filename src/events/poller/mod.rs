@@ -13,7 +13,7 @@ use dashmap::DashMap;
 use thiserror::Error;
 use crate::key::KeyGenerator;
 
-use crate::OSError;
+use crate::OsError;
 
 pub use self::interest_type::InterestType;
 pub use self::registry::EventPollerRegistry;
@@ -24,17 +24,17 @@ use super::Event;
 pub enum EventPollerError {
     #[error("Failed to create epoll file descriptor: {source}")]
     FailedToCreateEpollFd {
-        source: OSError,
+        source: OsError,
     },
 
     #[error("Failed to poll events: {source}")]
     FailedToPollEvents {
-        source: OSError,
+        source: OsError,
     },
 
     #[error("Failed to set epoll flags: {source}")]
     FailedToSetEpollFlags {
-        source: OSError,
+        source: OsError,
     }
 }
 

@@ -1,14 +1,17 @@
-use std::{os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}, sync::Arc};
+use std::{os::fd::{AsRawFd, FromRawFd, RawFd}, sync::Arc};
 
-use super::{futures::AcceptFuture, Address, NetworkError, SocketConfigurable, SocketOption, TcpStream};
+use futures::FutureExt;
 
+use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, notifications::NotificationFlags, worker::WorkerHandle, Key};
 
+use super::{IpAddress, NetworkError, SocketAddress, SocketConfigurable, SocketOption, TcpStream};
+
+#[derive(Debug, Clone)]
 pub struct TcpListener {
-    fd: Arc<OwnedFd>,
+    fd: Arc<OwnedFdAsync>,
 }
 
 impl TcpListener {
-
     pub fn new() -> Result<Self, NetworkError> {
 
         let fd = syscall!(socket(
@@ -20,17 +23,21 @@ impl TcpListener {
         })?;
 
         Ok(Self {
-            fd: unsafe { Arc::new(OwnedFd::from_raw_fd(fd)) }
+            fd: unsafe { Arc::new(OwnedFdAsync::from_raw_fd(fd)) }
         })
     }
 
-    pub fn bind(&self, addr: Address) -> Result<&Self, NetworkError> {
-        let addr: libc::sockaddr_in = addr.try_into()?;
+    pub fn bind(self, addr: SocketAddress) -> Result<Self, NetworkError> {
+        let addr_len = match addr.ip() {
+            IpAddress::V4(_) => std::mem::size_of::<libc::sockaddr_in>(),
+            IpAddress::V6(_) => std::mem::size_of::<libc::sockaddr_in6>(),
+        };
+        let addr: libc::sockaddr_storage = addr.try_into()?;
 
         syscall!(bind(
             self.fd.as_raw_fd(),
-            &addr as *const libc::sockaddr_in as *const libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in>() as u32
+            &addr as *const _ as *const libc::sockaddr,
+            addr_len as u32
         )).map_err(|e| {
             NetworkError::SocketBindError(e.into())
         })?;
@@ -38,42 +45,108 @@ impl TcpListener {
         Ok(self)
     }
 
-    pub fn listen(&self, backlog: i32) -> Result<(), NetworkError> {
+    fn get_worker_data(
+        &self,
+        id: usize,
+    ) -> Result<(WorkerHandle, Key, crate::notifications::Subscription), NetworkError> {
+        let worker_handle = crate::get_worker_handle(id).map_err(
+            |e| NetworkError::ListenerTaskError(e.to_string())
+        )?;
+
+        let key = worker_handle.io_submission_queue.submit(
+            IoOperation::accept_multi(&self.fd.as_raw_fd()),
+            None
+        ).map_err(|e| {
+            NetworkError::ListenerTaskError(e.to_string())
+        })?;
+
+        let notification_subscription = worker_handle.notify_on(
+            NotificationFlags::SHUTDOWN | NotificationFlags::KILL
+        ).map_err(|e| {
+            NetworkError::ListenerTaskError(e.to_string())
+        })?;
+
+        Ok((worker_handle, key, notification_subscription))
+    }
+
+    pub fn listen_on<F, Fut>(
+        self,
+        worker: usize,
+        backlog: i32,
+        handler: F
+    ) -> Result<Self, NetworkError>
+    where
+        F: Fn(TcpStream) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let fd = self.as_raw_fd();
+
         syscall!(listen(
-            self.fd.as_raw_fd(),
+            fd,
             backlog
         )).map_err(|e| {
             NetworkError::SocketListenError(e.into())
         })?;
 
-        Ok(())
+        let (
+            worker_handle, 
+            key, 
+            mut notification_subscription
+        ) = self.get_worker_data(worker)?;
+
+        crate::spawn(async move {
+            
+            loop {
+
+                futures::select! {
+                    result = std::future::poll_fn(|cx| {
+                        worker_handle.io_completion_queue.poll(key, cx)
+                    }).fuse() => {
+                        let mut stream = match result {
+                            Some(Ok(IoCompletion::Accept(completion))) => {
+                                TcpStream::new(
+                                    completion.fd,
+                                    None,
+                                    completion.address
+                                )
+                            },
+                            Some(Err(e)) => {
+                                error!("cl-aysnc: Failed to accept connection: {e}");
+                                continue;
+                            },
+                            _ => continue
+                        };
+        
+                        info!("cl-async: Accepted connection from {}", stream.address_peer().unwrap());
+        
+                        if let Err(e) = crate::spawn(handler(stream)) {
+                            error!("cl-async: Failed to spawn handler task: {e}");
+                            continue;
+                        }
+                    },
+                    _ = notification_subscription.recv().fuse() => {
+                        info!("cl-async: Shutting down listener");
+                        break;
+                    }
+                }
+                
+            }
+        }).map_err(|e| {
+            NetworkError::ListenerTaskError(e.to_string())
+        })?;
+
+        Ok(self)
     }
 
-    pub fn accept(&self) -> AcceptFuture {
-        AcceptFuture::new(Arc::clone(&self.fd))
-    }
-
-    pub fn try_accept(&self) -> Result<Option<TcpStream>, NetworkError> {
-
-        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        let mut addr_len = std::mem::size_of::<libc::sockaddr_in>() as u32;
-
-        let result = syscall!(accept4(
-            self.fd.as_raw_fd(),
-            &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr,
-            &mut addr_len as *mut u32,
-            libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC
-        ));
-
-        if let Err(os_err) = result {
-            let raw_err = os_err.raw_os_error();
-            if 
-                raw_err == Some(libc::EWOULDBLOCK) ||
-                raw_err == Some(libc::EAGAIN)
-            { Ok(None) }
-            else { Err(NetworkError::SocketAcceptError(os_err.into())) }
-        } else { Ok(Some(TcpStream::new(result.unwrap(), addr))) }
-    }
+    pub fn listen<F, Fut>(
+        self, 
+        backlog: i32,
+        handler: F
+    ) -> Result<Self, NetworkError> 
+    where
+        F: Fn(TcpStream) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    { self.listen_on(crate::next_worker_id(), backlog, handler) }
 
 }
 

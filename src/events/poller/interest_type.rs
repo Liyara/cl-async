@@ -1,6 +1,9 @@
 use bitflags::bitflags;
 
-const COMMON_FLAGS: i32 = libc::EPOLLHUP | libc::EPOLLRDHUP | libc::EPOLLET;
+const COMMON_FLAGS: i32 = 
+    libc::EPOLLET
+;
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct InterestType: i32 {

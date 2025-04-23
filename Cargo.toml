@@ -1,6 +1,6 @@
 [package]
 name = "cl-async"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2024"
 
 [features]
@@ -25,3 +25,11 @@ rustc-hash = "2.1.1"
 parking_lot = "0.12.3"
 dashmap = "6.1.0"
 io-uring = "0.7.4"
+enum_dispatch = "0.3.13"
+async-channel = "2.3.1"
+async-broadcast = "0.7.2"
+futures = "0.3.31"
+
+[[bin]]
+name = "cl-async"
+path = "src/bin/main.rs"

@@ -1,5 +1,5 @@
 use crate::{
-    io::IOEntry, 
+    io::IoSubmission, 
     task::TaskId, 
     Task
 };
@@ -9,8 +9,8 @@ pub enum Message {
     SpawnTask(Task),
     SpawnTasks(Vec<Task>),
     WakeTask(TaskId),
-    SubmitIOEntry(IOEntry),
-    SubmitIOEntries(Vec<IOEntry>),
+    SubmitIO(IoSubmission),
+    SubmitIOMulti(Vec<IoSubmission>),
     Continue,
     Shutdown,
     Kill,
