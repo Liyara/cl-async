@@ -122,6 +122,9 @@ pub enum IoOperationError {
     #[error("Index out of bounds: {0}")]
     OutOfBounds(usize),
 
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     #[error("Unexpected completion poll result: {0}")]
     UnexpectedPollResult(String),
 }
