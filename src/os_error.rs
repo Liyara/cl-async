@@ -110,6 +110,9 @@ pub enum OsError {
     #[error("Destination address required")]
     DestinationAddressRequired,
 
+    #[error("Broken pipe")]
+    BrokenPipe,
+
     #[error("OS Error: {0}")]
     Generic(i32),
 }
@@ -171,6 +174,7 @@ impl From<i32> for OsError {
             libc::ENETDOWN => OsError::NetworkDisconnected,
             libc::EHOSTUNREACH => OsError::PeerUnreachable,
             libc::EHOSTDOWN => OsError::PeerDisconnected,
+            libc::EPIPE => OsError::BrokenPipe,
             _ => OsError::Generic(os_error),
        } 
     }
@@ -214,6 +218,7 @@ impl Into<i32> for OsError {
             OsError::PeerUnreachable => libc::EHOSTUNREACH,
             OsError::PeerDisconnected => libc::EHOSTDOWN,
             OsError::NotConnected => libc::ENOTCONN,
+            OsError::BrokenPipe => libc::EPIPE,
             OsError::UnknownError => -1
         }
     }
