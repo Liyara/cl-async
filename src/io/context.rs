@@ -33,15 +33,22 @@ impl IoContext {
         Ok(unsafe { self.inner.submission().push(&entry)?; })
     }
 
-    pub fn prepare_submission(&mut self, submission: IoSubmission) -> Result<(), IoError> {
+    pub fn prepare_submission(&mut self, submission: IoSubmission) -> Option<IoSubmission> {
 
         let key = submission.key;
         let (mut entry, waker) = submission.split();
         let mut uring_entry = entry.as_uring_entry();
-        self.try_push_entry(&mut uring_entry)?;
+        if let Err(_) = self.try_push_entry(&mut uring_entry) {
+            let submission = IoSubmission {
+                key,
+                op: entry.op,
+                waker
+            };
+            return Some(submission);
+        }
         self.completion_queue.add_entry(key, entry, waker);
         
-        Ok(())
+        None
     }
         
 

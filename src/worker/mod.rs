@@ -37,7 +37,7 @@ use crate::{
         EventQueueRegistry, 
         EventSource, 
         EventType
-    }, io::{IoCompletionQueue, IoCompletionResult, IoContext, IoError, IoOperation, IoSubmissionQueue}, notifications::{self, Notification, NotificationFlags, Signal}, task::{
+    }, io::{IoCompletionQueue, IoCompletionResult, IoContext, IoError, IoOperation, IoSubmission, IoSubmissionQueue}, notifications::{self, Notification, NotificationFlags, Signal}, task::{
         executor::ExecutorError, 
         Executor
     }, Key, OsError, Task
@@ -409,6 +409,17 @@ impl Worker {
         Ok(())
     }
 
+    fn prepare_io_submission(
+        io_context: &mut IoContext,
+        submission: IoSubmission,
+        backup_queue: &mut VecDeque<IoSubmission>
+    ) -> bool {
+        if let Some(submission) = io_context.prepare_submission(submission) {
+            backup_queue.push_back(submission);
+            false
+        } else { true }
+    }
+
     fn worker_loop(
         id: usize,
         state: Arc<AtomicU8>,
@@ -437,6 +448,8 @@ impl Worker {
             EventSource::new(&sfd),
             InterestType::READ
         )?;
+
+        let mut waiting_submissions: VecDeque<IoSubmission> = VecDeque::new();
 
         loop {
 
@@ -558,6 +571,16 @@ impl Worker {
 
             if should_complete_io {
                 io_context.complete();
+
+                // Push any waiting submissions to the submission queue
+                while let Some(submission) = waiting_submissions.pop_front() {
+                    if let Some(submission) = io_context.prepare_submission(submission) {
+                        waiting_submissions.push_back(submission);
+                        break;
+                    } else if !should_submit_io {
+                        should_submit_io = true;
+                    }
+                }
             }
 
             if should_recv {
@@ -571,12 +594,20 @@ impl Worker {
                         }
                         Message::WakeTask(task_id) => executor.wake_task(task_id),
                         Message::SubmitIO(submission) => {
-                            io_context.prepare_submission(submission)?;
+                            Self::prepare_io_submission(
+                                &mut io_context, 
+                                submission, 
+                                &mut waiting_submissions
+                            );
                             should_submit_io = true;
                         }
                         Message::SubmitIOMulti(submissions) => {
                             for submission in submissions {
-                                io_context.prepare_submission(submission)?;
+                                Self::prepare_io_submission(
+                                    &mut io_context, 
+                                    submission, 
+                                    &mut waiting_submissions
+                                );
                             }
                             should_submit_io = true;
                         },
@@ -591,7 +622,11 @@ impl Worker {
                 }
             }
 
-            if should_submit_io { io_context.submit()?; }
+            if should_submit_io { 
+                if let Err(e) = io_context.submit() {
+                    error!("cl-async: Worker {}: Failed to submit IO operations: {}", id, e);
+                }
+            }
 
             while executor.has_ready_tasks() { executor.run_ready_tasks(); }
 
@@ -621,11 +656,19 @@ impl Worker {
                     }
                     Message::WakeTask(task_id) => executor.wake_task(task_id),
                     Message::SubmitIO(submission) => {
-                        io_context.prepare_submission(submission)?;
+                        Self::prepare_io_submission(
+                            &mut io_context, 
+                            submission, 
+                            &mut waiting_submissions
+                        );
                     }
                     Message::SubmitIOMulti(submissions) => {
                         for submission in submissions {
-                            io_context.prepare_submission(submission)?;
+                            Self::prepare_io_submission(
+                                &mut io_context, 
+                                submission, 
+                                &mut waiting_submissions
+                            );
                         }
                     },
                     Message::Kill => {
