@@ -156,3 +156,41 @@ impl From<i32> for OsError {
     }
 }
 
+impl Into<i32> for OsError {
+    fn into(self) -> i32 {
+        match self {
+            OsError::Generic(code) => code,
+            OsError::InvalidOperation => libc::EINVAL,
+            OsError::MaxFdReached => libc::EMFILE,
+            OsError::NotEnoughMemory => libc::ENOMEM,
+            OsError::OperationForbidden => libc::EACCES,
+            OsError::InvalidFd => libc::EBADF,
+            OsError::AlreadyExists => libc::EEXIST,
+            OsError::InvalidPointer => libc::EFAULT,
+            OsError::NotFound => libc::ENOENT,
+            OsError::PermissionDenied => libc::EPERM,
+            OsError::OperationInterrupted => libc::EINTR,
+            OsError::OperationCanceled => libc::ECANCELED,
+            OsError::NotADirectory => libc::ENOTDIR,
+            OsError::IsADirectory => libc::EISDIR,
+            OsError::ResourceUnavailable => libc::EAGAIN,
+            OsError::OperationInProgress => libc::EINPROGRESS,
+            OsError::Deadlock => libc::EDEADLK,
+            OsError::ResourceTooLarge => libc::EFBIG,
+            OsError::AddressInUse => libc::EADDRINUSE,
+            OsError::AddressNotAvailable => libc::EADDRNOTAVAIL,
+            OsError::AddressFamilyNotSupported => libc::EAFNOSUPPORT,
+            OsError::ConnectionRefused => libc::ECONNREFUSED,
+            OsError::ConnectionReset => libc::ECONNRESET,
+            OsError::ConnectionAborted => libc::ECONNABORTED,
+            OsError::ConnectionTimedOut => libc::ETIMEDOUT,
+            OsError::DestinationAddressRequired => libc::EDESTADDRREQ,
+            OsError::MessageTooLong => libc::EMSGSIZE,
+            OsError::InvalidMessage => libc::ENOMSG,
+            OsError::OperationNotSupported => libc::ENOTSUP,
+            OsError::ResourceBusy => libc::EBUSY,
+            OsError::UnknownError => -1
+        }
+    }
+}
+

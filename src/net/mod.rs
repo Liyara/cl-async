@@ -20,6 +20,7 @@ pub use address::IpAddress;
 pub use address::IpVersion;
 pub use address::PeerAddress;
 pub use address::LocalAddress;
+pub use address::Port;
 pub use tcp_stream::TcpStream;
 pub use tcp_stream::IoAcceptFuture;
 pub use tcp_server::TcpServer;

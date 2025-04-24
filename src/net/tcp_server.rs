@@ -1,6 +1,6 @@
 
 
-use super::{SocketAddress, NetworkError, SocketConfigurable, SocketOption, TcpListener, TcpStream};
+use super::{LocalAddress, NetworkError, SocketConfigurable, SocketOption, TcpListener, TcpStream};
 
 
 pub struct TcpServer {
@@ -41,7 +41,7 @@ impl TcpServer {
 
     pub fn bind(
         mut self,
-        address: SocketAddress
+        address: LocalAddress
     ) -> Result<Self, NetworkError> {
         for _ in 0..self.listeners.len() {
             let listener = self.listeners.pop().ok_or(

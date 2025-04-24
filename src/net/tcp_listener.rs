@@ -4,7 +4,7 @@ use futures::FutureExt;
 
 use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, notifications::NotificationFlags, worker::WorkerHandle, Key};
 
-use super::{IpAddress, NetworkError, SocketAddress, SocketConfigurable, SocketOption, TcpStream};
+use super::{IpVersion, LocalAddress, NetworkError, SocketConfigurable, SocketOption, TcpStream};
 
 #[derive(Debug, Clone)]
 pub struct TcpListener {
@@ -27,10 +27,10 @@ impl TcpListener {
         })
     }
 
-    pub fn bind(self, addr: SocketAddress) -> Result<Self, NetworkError> {
-        let addr_len = match addr.ip() {
-            IpAddress::V4(_) => std::mem::size_of::<libc::sockaddr_in>(),
-            IpAddress::V6(_) => std::mem::size_of::<libc::sockaddr_in6>(),
+    pub fn bind(self, addr: LocalAddress) -> Result<Self, NetworkError> {
+        let addr_len = match addr.ip().version() {
+            IpVersion::V4 => std::mem::size_of::<libc::sockaddr_in>(),
+            IpVersion::V6 => std::mem::size_of::<libc::sockaddr_in6>(),
         };
         let addr: libc::sockaddr_storage = addr.try_into()?;
 
@@ -124,13 +124,11 @@ impl TcpListener {
                             continue;
                         }
                     },
-                    _ = notification_subscription.recv().fuse() => {
-                        info!("cl-async: Shutting down listener");
-                        break;
-                    }
+                    _ = notification_subscription.recv().fuse() => { break; }
                 }
                 
             }
+            info!("cl-async: Shutting down listener");
         }).map_err(|e| {
             NetworkError::ListenerTaskError(e.to_string())
         })?;
