@@ -7,44 +7,91 @@ use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, notifications::Notifi
 
 use super::{IpVersion, LocalAddress, NetworkError, SocketConfigurable, SocketOption, TcpStream};
 
+pub trait TcpListenerState {}
+
+pub struct WantsBind {
+    _priv: (),
+}
+impl TcpListenerState for WantsBind {}
+
+pub struct WantsListen{
+    _priv: (),
+}
+impl TcpListenerState for WantsListen {}
+
+pub struct Listening{
+    _priv: (),
+}
+impl TcpListenerState for Listening {}
+
+impl TcpListenerState for () {}
+
 #[derive(Debug, Clone)]
-pub struct TcpListener {
+pub struct TcpListener<T: TcpListenerState = ()> {
     fd: Arc<OwnedFdAsync>,
+    addr: LocalAddress,
+    _state: std::marker::PhantomData<T>,
 }
 
-impl TcpListener {
-    pub fn new() -> Result<Self, NetworkError> {
+impl<T: TcpListenerState> TcpListener<T> {
+    fn transition_state<U: TcpListenerState>(self) -> TcpListener<U> {
+        TcpListener::<U> {
+            fd: self.fd,
+            addr: self.addr,
+            _state: std::marker::PhantomData::<U>,
+        }
+    }
+}
+
+impl TcpListener<()> {
+
+    pub fn new(addr: LocalAddress) -> Result<TcpListener<WantsBind>, NetworkError> {
+
+        let domain = match addr.ip().version() {
+            IpVersion::V4 => libc::AF_INET,
+            IpVersion::V6 => libc::AF_INET6,
+        };
 
         let fd = syscall!(socket(
-            libc::AF_INET,
+            domain,
             libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
             0
         )).map_err(|e| {
             NetworkError::SocketCreateError(e.into())
         })?;
 
-        Ok(Self {
-            fd: unsafe { Arc::new(OwnedFdAsync::from_raw_fd(fd)) }
+        Ok(TcpListener::<WantsBind> {
+            fd: unsafe { Arc::new(OwnedFdAsync::from_raw_fd(fd)) },
+            addr,
+            _state: std::marker::PhantomData::<WantsBind>,
         })
     }
 
-    pub fn bind(self, addr: LocalAddress) -> Result<Self, NetworkError> {
-        let addr_len = match addr.ip().version() {
+}
+
+impl TcpListener<WantsBind> {
+    pub fn bind(self) -> Result<TcpListener<WantsListen>, NetworkError> {
+
+        let addr_len = match self.addr.ip().version() {
             IpVersion::V4 => std::mem::size_of::<libc::sockaddr_in>(),
             IpVersion::V6 => std::mem::size_of::<libc::sockaddr_in6>(),
         };
-        let addr: libc::sockaddr_storage = addr.try_into()?;
+
+        let addr: libc::sockaddr_storage = self.addr.try_into()?;
 
         syscall!(bind(
-            self.fd.as_raw_fd(),
+            self.as_raw_fd(),
             &addr as *const _ as *const libc::sockaddr,
             addr_len as u32
         )).map_err(|e| {
             NetworkError::SocketBindError(e.into())
         })?;
 
-        Ok(self)
+        Ok(Self::transition_state::<WantsListen>(self))
     }
+}
+
+impl TcpListener<WantsListen> {
 
     fn get_worker_data(
         &self,
@@ -80,12 +127,12 @@ impl TcpListener {
         self,
         worker: usize,
         handler: F
-    ) -> Result<Self, NetworkError>
+    ) -> Result<TcpListener<Listening>, NetworkError>
     where
         F: Fn(TcpStream) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let fd = self.as_raw_fd();
+        let fd = Arc::clone(&self.fd);
 
         let backlog = match Self::try_get_backlog() {
             Ok(backlog) => backlog,
@@ -93,7 +140,7 @@ impl TcpListener {
         };
 
         syscall!(listen(
-            fd,
+            fd.as_raw_fd(),
             backlog
         )).map_err(|e| {
             NetworkError::SocketListenError(e.into())
@@ -139,32 +186,34 @@ impl TcpListener {
                 }
                 
             }
+
             info!("cl-async: Shutting down listener");
+            drop(fd);
+            
         }).map_err(|e| {
             NetworkError::ListenerTaskError(e.to_string())
         })?;
 
-        Ok(self)
+        Ok(Self::transition_state::<Listening>(self))
     }
 
     pub fn listen<F, Fut>(
         self, 
         handler: F
-    ) -> Result<Self, NetworkError> 
+    ) -> Result<TcpListener<Listening>, NetworkError> 
     where
         F: Fn(TcpStream) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     { self.listen_on(crate::next_worker_id(), handler) }
-
 }
 
-impl AsRawFd for TcpListener {
+impl<T: TcpListenerState> AsRawFd for TcpListener<T> {
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
 }
 
-impl SocketConfigurable for TcpListener {
+impl<T: TcpListenerState> SocketConfigurable for TcpListener<T> {
     fn set_opt(&self, option: SocketOption) -> Result<&Self, NetworkError> {
         option.set(self.fd.as_raw_fd())?;
         Ok(self)
