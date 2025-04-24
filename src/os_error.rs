@@ -86,11 +86,26 @@ pub enum OsError {
     #[error("Connection reset")]
     ConnectionReset,
 
+    #[error("Not connected")]
+    NotConnected,
+
     #[error("Connection aborted")]
     ConnectionAborted,
 
     #[error("Connection timed out")]
     ConnectionTimedOut,
+
+    #[error("Network unreachable")]
+    NetworkUnreachable,
+
+    #[error("Peer unreachable")]
+    PeerUnreachable,
+
+    #[error("Network disconnected")]
+    NetworkDisconnected,
+
+    #[error("Peer disconnected")]
+    PeerDisconnected,
 
     #[error("Destination address required")]
     DestinationAddressRequired,
@@ -151,6 +166,11 @@ impl From<i32> for OsError {
             libc::EDESTADDRREQ => OsError::DestinationAddressRequired,
             libc::EMSGSIZE => OsError::MessageTooLong,
             libc::ENOMSG => OsError::InvalidMessage,
+            libc::ENOTCONN => OsError::NotConnected,
+            libc::ENETUNREACH => OsError::NetworkUnreachable,
+            libc::ENETDOWN => OsError::NetworkDisconnected,
+            libc::EHOSTUNREACH => OsError::PeerUnreachable,
+            libc::EHOSTDOWN => OsError::PeerDisconnected,
             _ => OsError::Generic(os_error),
        } 
     }
@@ -189,6 +209,11 @@ impl Into<i32> for OsError {
             OsError::InvalidMessage => libc::ENOMSG,
             OsError::OperationNotSupported => libc::ENOTSUP,
             OsError::ResourceBusy => libc::EBUSY,
+            OsError::NetworkUnreachable => libc::ENETUNREACH,
+            OsError::NetworkDisconnected => libc::ENETDOWN,
+            OsError::PeerUnreachable => libc::EHOSTUNREACH,
+            OsError::PeerDisconnected => libc::EHOSTDOWN,
+            OsError::NotConnected => libc::ENOTCONN,
             OsError::UnknownError => -1
         }
     }
