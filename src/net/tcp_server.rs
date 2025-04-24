@@ -57,7 +57,6 @@ impl TcpServer {
 
     pub fn listen<F, Fut>(
         mut self,
-        backlog: i32,
         handler: F
     ) -> Result<Self, NetworkError> 
     where
@@ -74,7 +73,6 @@ impl TcpServer {
 
             self.listeners.push(listener.listen_on(
                 i,
-                backlog,
                 handler.clone()
             )?);
         }

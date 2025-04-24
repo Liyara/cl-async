@@ -1,6 +1,6 @@
 [package]
 name = "cl-async"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2024"
 
 [features]
@@ -29,6 +29,7 @@ enum_dispatch = "0.3.13"
 async-channel = "2.3.1"
 async-broadcast = "0.7.2"
 futures = "0.3.31"
+sysctl = "0.6.0"
 
 [[bin]]
 name = "cl-async"

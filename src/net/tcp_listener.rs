@@ -1,6 +1,7 @@
 use std::{os::fd::{AsRawFd, FromRawFd, RawFd}, sync::Arc};
 
 use futures::FutureExt;
+use sysctl::Sysctl;
 
 use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, notifications::NotificationFlags, worker::WorkerHandle, Key};
 
@@ -69,10 +70,15 @@ impl TcpListener {
         Ok((worker_handle, key, notification_subscription))
     }
 
+    fn try_get_backlog() -> Result<i32, ()> {
+        let ctl = sysctl::Ctl::new("net.core.somaxconn").map_err(|_| ())?;
+        let backlog_str = ctl.value_string().map_err(|_| ())?;
+        backlog_str.parse::<i32>().map_err(|_| ())
+    }
+
     pub fn listen_on<F, Fut>(
         self,
         worker: usize,
-        backlog: i32,
         handler: F
     ) -> Result<Self, NetworkError>
     where
@@ -80,6 +86,11 @@ impl TcpListener {
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let fd = self.as_raw_fd();
+
+        let backlog = match Self::try_get_backlog() {
+            Ok(backlog) => backlog,
+            Err(_) => 4096
+        };
 
         syscall!(listen(
             fd,
@@ -138,13 +149,12 @@ impl TcpListener {
 
     pub fn listen<F, Fut>(
         self, 
-        backlog: i32,
         handler: F
     ) -> Result<Self, NetworkError> 
     where
         F: Fn(TcpStream) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
-    { self.listen_on(crate::next_worker_id(), backlog, handler) }
+    { self.listen_on(crate::next_worker_id(), handler) }
 
 }
 
