@@ -236,38 +236,31 @@ impl TryFromCompletion for () {
 
 */
 
-pub trait AsyncReadable: AsRawFd {
-    fn read(&self, buffer_length: usize) -> impl Future<Output = IoResult<Vec<u8>>>;
-    fn read_into(&self, buffer: Vec<u8>) -> impl Future<Output = IoResult<Vec<u8>>>;
-    fn read_at(&self, offset: usize, buffer_length: usize) -> impl Future<Output = IoResult<Vec<u8>>>;
-    fn read_at_into(&self, offset: usize, buffer: Vec<u8>) -> impl Future<Output = IoResult<Vec<u8>>>;
+pub trait AsyncGatherReadable: AsRawFd {
     fn readv(&self, buffers_lengths: Vec<usize>) -> impl Future<Output = IoResult<Vec<Vec<u8>>>>;
     fn readv_into(&self, buffers: Vec<Vec<u8>>) -> impl Future<Output = IoResult<Vec<Vec<u8>>>>;
     fn readv_at(&self, offset: usize, buffers_lengths: Vec<usize>) -> impl Future<Output = IoResult<Vec<Vec<u8>>>>;
     fn readv_at_into(&self, offset: usize, buffers: Vec<Vec<u8>>) -> impl Future<Output = IoResult<Vec<Vec<u8>>>>;
 }
 
-pub trait AsyncWritable: AsRawFd {
-    fn write(&self, buffer: Vec<u8>) -> impl Future<Output = IoResult<usize>>;
-    fn write_at(&self, offset: usize, buffer: Vec<u8>) -> impl Future<Output = IoResult<usize>>;
+pub trait AsyncReadable: AsRawFd + AsyncGatherReadable {
+    fn read(&self, buffer_length: usize) -> impl Future<Output = IoResult<Vec<u8>>>;
+    fn read_into(&self, buffer: Vec<u8>) -> impl Future<Output = IoResult<Vec<u8>>>;
+    fn read_at(&self, offset: usize, buffer_length: usize) -> impl Future<Output = IoResult<Vec<u8>>>;
+    fn read_at_into(&self, offset: usize, buffer: Vec<u8>) -> impl Future<Output = IoResult<Vec<u8>>>;
+}
+
+pub trait AsyncScatterWritable: AsRawFd {
     fn writev(&self, buffers: Vec<Vec<u8>>) -> impl Future<Output = IoResult<usize>>;
     fn writev_at(&self, offset: usize, buffers: Vec<Vec<u8>>) -> impl Future<Output = IoResult<usize>>;
 }
 
-pub trait AsyncReceiver: AsRawFd {
-    
-    fn recv(
-        &self, 
-        buffer_length: usize,
-        flags: crate::io::operation::data::IoRecvFlags
-    ) -> impl Future<Output = IoResult<Vec<u8>>>;
+pub trait AsyncWritable: AsRawFd + AsyncScatterWritable {
+    fn write(&self, buffer: Vec<u8>) -> impl Future<Output = IoResult<usize>>;
+    fn write_at(&self, offset: usize, buffer: Vec<u8>) -> impl Future<Output = IoResult<usize>>;
+}
 
-    fn recv_into(
-        &self, 
-        buffer: Vec<u8>,
-        flags: crate::io::operation::data::IoRecvFlags
-    ) -> impl Future<Output = IoResult<Vec<u8>>>;
-    
+pub trait AsyncMessageReceiver: AsRawFd {
     fn recv_msg(
         &self,
         buffer_lengths: Vec<usize>,
@@ -283,16 +276,33 @@ pub trait AsyncReceiver: AsRawFd {
     ) -> impl Future<Output = IoResult<crate::io::message::IoMessage>>;
 }
 
-pub trait AsyncSender: AsRawFd {
-    fn send(
+pub trait AsyncReceiver: AsRawFd + AsyncMessageReceiver {
+    
+    fn recv(
+        &self, 
+        buffer_length: usize,
+        flags: crate::io::operation::data::IoRecvFlags
+    ) -> impl Future<Output = IoResult<Vec<u8>>>;
+
+    fn recv_into(
         &self, 
         buffer: Vec<u8>,
-        flags: crate::io::operation::data::IoSendFlags
-    ) -> impl Future<Output = IoResult<usize>>;
-    
+        flags: crate::io::operation::data::IoRecvFlags
+    ) -> impl Future<Output = IoResult<Vec<u8>>>;
+}
+
+pub trait AsyncMessageSender: AsRawFd {
     fn send_msg(
         &self, 
         message: crate::io::message::IoMessage,
+        flags: crate::io::operation::data::IoSendFlags
+    ) -> impl Future<Output = IoResult<usize>>;
+}
+
+pub trait AsyncSender: AsRawFd + AsyncMessageSender {
+    fn send(
+        &self, 
+        buffer: Vec<u8>,
         flags: crate::io::operation::data::IoSendFlags
     ) -> impl Future<Output = IoResult<usize>>;
 }
@@ -422,18 +432,25 @@ pub (crate) macro __async_impl_readv_at_into__ {
     }
 }
 
+pub (crate) macro __async_impl_gather_readable__ {
+    ($type:ty) => {
+        impl crate::io::operation::future::AsyncGatherReadable for $type {
+            crate::io::operation::future::__async_impl_readv__!();
+            crate::io::operation::future::__async_impl_readv_into__!();
+            crate::io::operation::future::__async_impl_readv_at__!();
+            crate::io::operation::future::__async_impl_readv_at_into__!();
+        }
+    }
+}
 
 pub (crate) macro __async_impl_readable__ {
     ($type:ty) => {
+        __async_impl_gather_readable__!($type);
         impl crate::io::operation::future::AsyncReadable for $type {
             crate::io::operation::future::__async_impl_read__!();
             crate::io::operation::future::__async_impl_read_into__!();
             crate::io::operation::future::__async_impl_read_at__!();
             crate::io::operation::future::__async_impl_read_at_into__!();
-            crate::io::operation::future::__async_impl_readv__!();
-            crate::io::operation::future::__async_impl_readv_into__!();
-            crate::io::operation::future::__async_impl_readv_at__!();
-            crate::io::operation::future::__async_impl_readv_at_into__!();
         }
     }
 }
@@ -492,13 +509,21 @@ pub (crate) macro __async_impl_writev_at__ {
     }
 }
 
+pub (crate) macro __async_impl_scatter_writable__ {
+    ($type:ty) => {
+        impl crate::io::operation::future::AsyncScatterWritable for $type {
+            crate::io::operation::future::__async_impl_writev__!();
+            crate::io::operation::future::__async_impl_writev_at__!();
+        }
+    }
+}
+
 pub (crate) macro __async_impl_writable__ {
     ($type:ty) => {
+        __async_impl_scatter_writable__!($type);
         impl crate::io::operation::future::AsyncWritable for $type {
             crate::io::operation::future::__async_impl_write__!();
             crate::io::operation::future::__async_impl_write_at__!();
-            crate::io::operation::future::__async_impl_writev__!();
-            crate::io::operation::future::__async_impl_writev_at__!();
         }
     }
 }
@@ -611,13 +636,21 @@ pub (crate) macro __async_impl_recv_msg_into__ {
     }
 }
 
+pub (crate) macro __async_impl_message_receiver__ {
+    ($type:ty) => {
+        impl crate::io::operation::future::AsyncMessageReceiver for $type {
+            crate::io::operation::future::__async_impl_recv_msg__!();
+            crate::io::operation::future::__async_impl_recv_msg_into__!();
+        }
+    }
+}
+
 pub (crate) macro __async_impl_receiver__ {
     ($type:ty) => {
+        __async_impl_message_receiver__!($type);
         impl crate::io::operation::future::AsyncReceiver for $type {
             crate::io::operation::future::__async_impl_recv__!();
             crate::io::operation::future::__async_impl_recv_into__!();
-            crate::io::operation::future::__async_impl_recv_msg__!();
-            crate::io::operation::future::__async_impl_recv_msg_into__!();
         }
     }
 }
@@ -658,11 +691,19 @@ pub (crate) macro __async_impl_send_msg__ {
     }
 }
 
+pub (crate) macro __async_impl_message_sender__ {
+    ($type:ty) => {
+        impl crate::io::operation::future::AsyncMessageSender for $type {
+            crate::io::operation::future::__async_impl_send_msg__!();
+        }
+    }
+}
+
 pub (crate) macro __async_impl_sender__ {
     ($type:ty) => {
+        __async_impl_message_sender__!($type);
         impl crate::io::operation::future::AsyncSender for $type {
             crate::io::operation::future::__async_impl_send__!();
-            crate::io::operation::future::__async_impl_send_msg__!();
         }
     }
 }
