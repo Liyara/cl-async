@@ -616,8 +616,10 @@ impl Worker {
                         },
                         Message::Shutdown => {
                             Self::set_state(&state, WorkerState::Stopping);
+                        },
+                        Message::Continue(waker) => {
+                            waker.wake();
                         }
-                        _ => ()
                     }
                 }
             }
@@ -674,6 +676,9 @@ impl Worker {
                     Message::Kill => {
                         Self::set_state(&state, WorkerState::Stopped);
                         return Ok(()); 
+                    },
+                    Message::Continue(waker) => {
+                        waker.wake();
                     },
                     _ => ()
                 }

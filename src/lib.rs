@@ -15,6 +15,7 @@ mod worker;
 mod key;
 mod os_error;
 mod pool;
+mod r#yield;
 
 pub mod io;
 pub mod events;
@@ -151,3 +152,5 @@ pub fn notify_on(
 ) -> Result<notifications::Subscription> {
     Ok(pool().notify_on(flags)?)
 }
+
+pub async fn yield_now() { r#yield::YieldFuture::new().await }

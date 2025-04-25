@@ -47,8 +47,6 @@ impl ThreadPool {
 
     pub (crate) fn new(n_threads: usize) -> Self {
 
-        let n_threads = std::cmp::max(2, n_threads);
-
         Self { 
             n_threads, 
             workers: DashMap::new()

@@ -11,7 +11,7 @@ pub enum Message {
     WakeTask(TaskId),
     SubmitIO(IoSubmission),
     SubmitIOMulti(Vec<IoSubmission>),
-    Continue,
+    Continue(std::task::Waker),
     Shutdown,
     Kill,
 }
