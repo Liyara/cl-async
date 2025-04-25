@@ -13,6 +13,10 @@ use thiserror::Error;
 use crate::os_error;
 
 pub use tcp_listener::TcpListener;
+pub use tcp_listener::TcpListenerState;
+pub use tcp_listener::WantsBind as TcpListenerStateWantsBind;
+pub use tcp_listener::WantsListen as TcpListenerStateWantsListen;
+pub use tcp_listener::Listening as TcpListenerStateListening;
 pub use socket_options::SocketOption;
 pub use socket_options::SocketConfigurable;
 pub use address::SocketAddress;
