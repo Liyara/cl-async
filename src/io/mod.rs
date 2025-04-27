@@ -47,6 +47,7 @@ pub use message::TlsLevelType;
 pub use message::TlsRecordType;
 pub use message::TlsAlertLevel;
 pub use message::TlsAlertDescription;
+pub use message::TlsAlert;
 
 pub use buffers::IoInputBuffer;
 pub use buffers::IoOutputBuffer;
