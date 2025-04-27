@@ -151,8 +151,8 @@ impl TryFromCompletion for () {
 
 pub trait AsyncGatherReadable: AsRawFd {
     type Error;
-    type OutputBuffer: TryInto<Vec<u8>>;
-    type InputBuffer: From<Vec<u8>>;
+    type OutputBuffer;
+    type InputBuffer;
     fn readv(&self, buffers_lengths: Vec<usize>) -> impl Future<Output = Result<Vec<Self::OutputBuffer>, Self::Error>>;
     fn readv_into(&self, buffers: Vec<Self::InputBuffer>) -> impl Future<Output = Result<Vec<Self::OutputBuffer>, Self::Error>>;
     fn readv_at(&self, offset: usize, buffers_lengths: Vec<usize>) -> impl Future<Output = Result<Vec<Self::OutputBuffer>, Self::Error>>;
@@ -168,8 +168,8 @@ pub trait AsyncReadable: AsRawFd + AsyncGatherReadable {
 
 pub trait AsyncScatterWritable: AsRawFd {
     type Error;
-    type InputBuffer: From<Vec<u8>>;
-    type Output: TryInto<usize>;
+    type InputBuffer;
+    type Output;
     fn writev(&self, buffers: Vec<Self::InputBuffer>) -> impl Future<Output = Result<Self::Output, Self::Error>>;
     fn writev_at(&self, offset: usize, buffers: Vec<Self::InputBuffer>) -> impl Future<Output = Result<Self::Output, Self::Error>>;
 }
@@ -182,8 +182,8 @@ pub trait AsyncWritable: AsRawFd + AsyncScatterWritable {
 pub trait AsyncMessageReceiver: AsRawFd {
 
     type Error;
-    type InputBuffer: From<Vec<u8>>;
-    type OutputMessage: TryInto<crate::io::message::IoMessage>;
+    type InputBuffer;
+    type OutputMessage;
 
     fn recv_msg(
         &self,
@@ -202,7 +202,7 @@ pub trait AsyncMessageReceiver: AsRawFd {
 
 pub trait AsyncReceiver: AsRawFd + AsyncMessageReceiver {
 
-    type OutputBuffer: TryInto<Vec<u8>>;
+    type OutputBuffer;
     
     fn recv(
         &self, 
@@ -220,8 +220,8 @@ pub trait AsyncReceiver: AsRawFd + AsyncMessageReceiver {
 pub trait AsyncMessageSender: AsRawFd {
 
     type Error;
-    type InputMessage: Into<crate::io::message::IoMessage>;
-    type Output: TryInto<usize>;
+    type InputMessage;
+    type Output;
 
     fn send_msg(
         &self, 
@@ -232,7 +232,7 @@ pub trait AsyncMessageSender: AsRawFd {
 
 pub trait AsyncSender: AsRawFd + AsyncMessageSender {
 
-    type InputBuffer: From<Vec<u8>>;
+    type InputBuffer;
 
     fn send(
         &self, 
@@ -244,6 +244,7 @@ pub trait AsyncSender: AsRawFd + AsyncMessageSender {
 pub trait AsyncCopyable: AsRawFd {
 
     type Error;
+    type Output;
 
     fn copy_to<T: AsRawFd>(
         &self,
@@ -252,7 +253,7 @@ pub trait AsyncCopyable: AsRawFd {
         offset_in: usize,
         offset_out: usize,
         flags: crate::io::operation::data::IoSpliceFlags
-    ) -> impl Future<Output = Result<usize, Self::Error>>;
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>>;
 }
 
 /* 
@@ -499,6 +500,7 @@ pub (crate) macro __async_impl_copyable__ {
     ($type:ty) => {
         impl crate::io::operation::future::AsyncCopyable for $type {
             type Error = crate::io::IoError;
+            type Output = usize;
             crate::io::operation::future::__async_impl_copy_to__!();
         }
     }
