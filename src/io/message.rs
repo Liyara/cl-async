@@ -104,6 +104,7 @@ impl From<u8> for TlsAlertDescription {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct TlsAlert {
     pub level: TlsAlertLevel,
     pub description: Option<TlsAlertDescription>,
