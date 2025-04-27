@@ -151,7 +151,7 @@ impl TryFromCompletion for () {
 
 pub trait AsyncGatherReadable: AsRawFd {
     type Error;
-    type OutputBuffer: Into<Vec<u8>>;
+    type OutputBuffer: TryInto<Vec<u8>>;
     type InputBuffer: From<Vec<u8>>;
     fn readv(&self, buffers_lengths: Vec<usize>) -> impl Future<Output = Result<Vec<Self::OutputBuffer>, Self::Error>>;
     fn readv_into(&self, buffers: Vec<Self::InputBuffer>) -> impl Future<Output = Result<Vec<Self::OutputBuffer>, Self::Error>>;
@@ -169,7 +169,7 @@ pub trait AsyncReadable: AsRawFd + AsyncGatherReadable {
 pub trait AsyncScatterWritable: AsRawFd {
     type Error;
     type InputBuffer: From<Vec<u8>>;
-    type Output: Into<usize>;
+    type Output: TryInto<usize>;
     fn writev(&self, buffers: Vec<Self::InputBuffer>) -> impl Future<Output = Result<Self::Output, Self::Error>>;
     fn writev_at(&self, offset: usize, buffers: Vec<Self::InputBuffer>) -> impl Future<Output = Result<Self::Output, Self::Error>>;
 }
@@ -183,7 +183,7 @@ pub trait AsyncMessageReceiver: AsRawFd {
 
     type Error;
     type InputBuffer: From<Vec<u8>>;
-    type OutputMessage: Into<crate::io::message::IoMessage>;
+    type OutputMessage: TryInto<crate::io::message::IoMessage>;
 
     fn recv_msg(
         &self,
@@ -202,7 +202,7 @@ pub trait AsyncMessageReceiver: AsRawFd {
 
 pub trait AsyncReceiver: AsRawFd + AsyncMessageReceiver {
 
-    type OutputBuffer: Into<Vec<u8>>;
+    type OutputBuffer: TryInto<Vec<u8>>;
     
     fn recv(
         &self, 
@@ -221,7 +221,7 @@ pub trait AsyncMessageSender: AsRawFd {
 
     type Error;
     type InputMessage: Into<crate::io::message::IoMessage>;
-    type Output: Into<usize>;
+    type Output: TryInto<usize>;
 
     fn send_msg(
         &self, 
