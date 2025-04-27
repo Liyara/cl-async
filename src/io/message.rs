@@ -1208,6 +1208,47 @@ impl IoMessage {
             address,
         )?)
     }
+
+    pub fn is_finished(&self) -> bool {
+        self.data.is_some() && self.data.as_ref().unwrap().is_empty()
+    }
+
+    pub fn is_close_notify(&self) -> bool {
+        if let Some(control) = &self.control {
+            for msg in control {
+                if let IoControlMessageLevel::Tls(TlsLevelType::GetRecordType(record_type)) = msg.level {
+                    if record_type == TlsRecordType::Alert {
+                        if let Some(buffers) = &self.data {
+                            if buffers.len() == 1 && buffers[0].len() == 2 {
+                                return buffers[0][0] == TlsAlertLevel::Warning as u8 &&
+                                       buffers[0][1] == TlsAlertDescription::CloseNotify as u8;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn is_fatal_alert(&self) -> bool {
+        if let Some(control) = &self.control {
+            for msg in control {
+                if let IoControlMessageLevel::Tls(TlsLevelType::GetRecordType(record_type)) = msg.level {
+                    if record_type == TlsRecordType::Alert {
+                        if let Some(buffers) = &self.data {
+                            if buffers.len() == 1 {
+                                if buffers[0].len() == 2 {
+                                    return buffers[0][0] == TlsAlertLevel::Fatal as u8;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
     
 }
 
