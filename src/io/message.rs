@@ -9,6 +9,17 @@ use super::{buffers::IoDoubleBuffer, completion::TryFromCompletion, operation::f
 pub enum TlsAlertLevel {
     Warning = 1,
     Fatal = 2,
+    Unknown = 255,
+}
+
+impl From<u8> for TlsAlertLevel {
+    fn from(byte: u8) -> Self {
+        match byte {
+            1 => TlsAlertLevel::Warning,
+            2 => TlsAlertLevel::Fatal,
+            _ => TlsAlertLevel::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -48,6 +59,62 @@ pub enum TlsAlertDescription {
     UnknownPSKIdentity = 115,
     CertificateRequired = 116,
     NoApplicationProtocol = 120,
+    Unknown = 255,
+}
+
+impl From<u8> for TlsAlertDescription {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0 => TlsAlertDescription::CloseNotify,
+            10 => TlsAlertDescription::UnexpectedMessage,
+            20 => TlsAlertDescription::BadRecordMac,
+            21 => TlsAlertDescription::DecryptionFailed,
+            22 => TlsAlertDescription::RecordOverflow,
+            30 => TlsAlertDescription::DecompressionFailure,
+            40 => TlsAlertDescription::HandshakeFailure,
+            41 => TlsAlertDescription::NoCertificate,
+            42 => TlsAlertDescription::BadCertificate,
+            43 => TlsAlertDescription::UnsupportedCertificate,
+            44 => TlsAlertDescription::CertificateRevoked,
+            45 => TlsAlertDescription::CertificateExpired,
+            46 => TlsAlertDescription::CertificateUnknown,
+            47 => TlsAlertDescription::IllegalParameter,
+            48 => TlsAlertDescription::UnknownCA,
+            49 => TlsAlertDescription::AccessDenied,
+            50 => TlsAlertDescription::DecodeError,
+            51 => TlsAlertDescription::DecryptError,
+            60 => TlsAlertDescription::ExportRestriction,
+            70 => TlsAlertDescription::ProtocolVersion,
+            71 => TlsAlertDescription::InsufficientSecurity,
+            80 => TlsAlertDescription::InternalError,
+            86 => TlsAlertDescription::InappropriateFallback,
+            90 => TlsAlertDescription::UserCanceled,
+            100 => TlsAlertDescription::NoRenegotiation,
+            109 => TlsAlertDescription::MissingExtension,
+            110 => TlsAlertDescription::UnsupportedExtension,
+            111 => TlsAlertDescription::CertificateUnobtainable,
+            112 => TlsAlertDescription::UnrecognizedName,
+            113 => TlsAlertDescription::BadCertificateStatusResponse,
+            114 => TlsAlertDescription::BadCertificateHashValue,
+            115 => TlsAlertDescription::UnknownPSKIdentity,
+            116 => TlsAlertDescription::CertificateRequired,
+            120 => TlsAlertDescription::NoApplicationProtocol,
+            _ => TlsAlertDescription::Unknown
+        }
+    }
+}
+
+pub struct TlsAlert {
+    pub level: TlsAlertLevel,
+    pub description: Option<TlsAlertDescription>,
+}
+
+impl TlsAlert {
+    pub fn is_fatal(&self) -> bool { self.level == TlsAlertLevel::Fatal }
+    pub fn is_warning(&self) -> bool { self.level == TlsAlertLevel::Warning }
+    pub fn is_close_notify(&self) -> bool { 
+        self.description == Some(TlsAlertDescription::CloseNotify) 
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1213,41 +1280,24 @@ impl IoMessage {
         self.data.is_some() && self.data.as_ref().unwrap().is_empty()
     }
 
-    pub fn is_close_notify(&self) -> bool {
+    pub fn get_alert(&self) -> Option<TlsAlert> {
         if let Some(control) = &self.control {
             for msg in control {
                 if let IoControlMessageLevel::Tls(TlsLevelType::GetRecordType(record_type)) = msg.level {
                     if record_type == TlsRecordType::Alert {
                         if let Some(buffers) = &self.data {
-                            if buffers.len() == 1 && buffers[0].len() == 2 {
-                                return buffers[0][0] == TlsAlertLevel::Warning as u8 &&
-                                       buffers[0][1] == TlsAlertDescription::CloseNotify as u8;
+                            if buffers.len() == 1 && buffers[0].len() <= 2 {
+                                return Some(TlsAlert {
+                                    level: buffers[0][0].into(),
+                                    description: buffers[0].get(1).map(|&b| b.into())
+                                });
                             }
                         }
                     }
                 }
             }
         }
-        false
-    }
-
-    pub fn is_fatal_alert(&self) -> bool {
-        if let Some(control) = &self.control {
-            for msg in control {
-                if let IoControlMessageLevel::Tls(TlsLevelType::GetRecordType(record_type)) = msg.level {
-                    if record_type == TlsRecordType::Alert {
-                        if let Some(buffers) = &self.data {
-                            if buffers.len() == 1 {
-                                if buffers[0].len() == 2 {
-                                    return buffers[0][0] == TlsAlertLevel::Fatal as u8;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        false
+        None
     }
     
 }
