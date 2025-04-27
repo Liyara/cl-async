@@ -1,6 +1,6 @@
 [package]
 name = "cl-async"
-version = "2.1.4"
+version = "2.2.0"
 edition = "2024"
 
 [features]
