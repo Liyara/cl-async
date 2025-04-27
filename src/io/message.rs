@@ -1,4 +1,4 @@
-use std::{os::fd::RawFd, pin::Pin, ptr::read_unaligned};
+use std::{fmt, os::fd::RawFd, pin::Pin, ptr::read_unaligned};
 
 use crate::net::{IpAddress, IpVersion, NetworkError, PeerAddress};
 
@@ -108,6 +108,12 @@ impl From<u8> for TlsAlertDescription {
 pub struct TlsAlert {
     pub level: TlsAlertLevel,
     pub description: Option<TlsAlertDescription>,
+}
+
+impl fmt::Display for TlsAlert {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TlsAlert {{ level: {:?}, description: {:?} }}", self.level, self.description)
+    }
 }
 
 impl TlsAlert {
