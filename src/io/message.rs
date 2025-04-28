@@ -2,7 +2,7 @@ use std::{fmt, os::fd::RawFd, pin::Pin, ptr::read_unaligned};
 
 use crate::net::{IpAddress, IpVersion, NetworkError, PeerAddress};
 
-use super::{buffers::IoDoubleBuffer, completion::TryFromCompletion, operation::future::IoOperationFuture, IoCompletion, IoDoubleInputBuffer, IoDoubleOutputBuffer, IoError, IoInputBuffer, IoOperationError};
+use super::{buffers::IoDoubleBuffer, completion::TryFromCompletion, operation::future::IoOperationFuture, operation_data::IoRecvMsgOutputFlags, IoCompletion, IoDoubleInputBuffer, IoDoubleOutputBuffer, IoError, IoInputBuffer, IoOperationError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(u8)]
@@ -1042,6 +1042,7 @@ pub struct IoMessage {
     control: Option<Vec<IoControlMessage>>,
     address: Option<PeerAddress>,
     data: Option<Vec<Vec<u8>>>,
+    flags: Option<IoRecvMsgOutputFlags>
 }
 
 impl IoMessage {
@@ -1055,6 +1056,7 @@ impl IoMessage {
             control,
             address,
             data: buffers,
+            flags: None,
         }
     }
 
@@ -1255,6 +1257,9 @@ impl IoMessage {
         self.data.as_ref()
     }
 
+    pub fn flags(&self) -> Option<IoRecvMsgOutputFlags> { self.flags }
+    pub fn take_flags(&mut self) -> Option<IoRecvMsgOutputFlags> { self.flags.take() }
+
     pub fn prepare(self) -> Result<PreparedIoMessage<IoDoubleInputBuffer>, IoOperationError> {
 
         let control = match self.control {
@@ -1432,12 +1437,15 @@ impl PreparedIoMessage<IoDoubleOutputBuffer> {
             }
         };
 
+        let flags = IoRecvMsgOutputFlags::from_bits(self.inner._msghdr.msg_flags);
+
         Ok(IoMessage {
             control: Some(IoControlMessage::try_parse_from_msghdr(
                 &self.inner._msghdr,
             )?),
             address,
             data,
+            flags
         })
     }
 }
@@ -1470,6 +1478,7 @@ impl Default for IoMessage {
             control: None,
             address: None,
             data: None,
+            flags: None,
         }
     }
 }
