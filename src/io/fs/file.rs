@@ -14,12 +14,7 @@ use std::{
 use crate::{
     io::{
         completion::TryFromCompletion, operation::future::{
-            IoOperationFuture, 
-            IoReadFuture, 
-            IoVoidFuture, 
-            __async_impl_copyable__, 
-            __async_impl_readable__, 
-            __async_impl_writable__
+            IoOperationFuture, IoReadFuture, IoVoidFuture, __async_impl_copyable__, __async_impl_readable__, __async_impl_types__, __async_impl_writable__
         }, operation_data::{
             IoFileCreateMode, 
             IoFileOpenSettings, 
@@ -198,6 +193,7 @@ impl AsRawFd for File {
     }
 }
 
+__async_impl_types__!(File);
 __async_impl_readable__!(File);
 __async_impl_writable__!(File);
 __async_impl_copyable__!(File);

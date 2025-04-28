@@ -6,7 +6,7 @@ use std::os::fd::{
 
 use crate::io::{
     operation::future::{
-        IoOperationFuture, IoVoidFuture, __async_impl_copyable__, __async_impl_receiver__, __async_impl_sender__
+        IoOperationFuture, IoVoidFuture, __async_impl_copyable__, __async_impl_receiver__, __async_impl_sender__, __async_impl_types__
     }, IoError, IoOperation, IoResult, OwnedFdAsync
 };
 
@@ -145,6 +145,7 @@ impl AsRawFd for TcpStream {
     }
 }
 
+__async_impl_types__!(TcpStream);
 __async_impl_receiver__!(TcpStream);
 __async_impl_sender__!(TcpStream);
 __async_impl_copyable__!(TcpStream);
