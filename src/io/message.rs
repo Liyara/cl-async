@@ -1440,9 +1440,13 @@ impl PreparedIoMessage<IoDoubleOutputBuffer> {
         let flags = IoRecvMsgOutputFlags::from_bits(self.inner._msghdr.msg_flags);
 
         Ok(IoMessage {
-            control: Some(IoControlMessage::try_parse_from_msghdr(
+            control: match IoControlMessage::try_parse_from_msghdr(
                 &self.inner._msghdr,
-            )?),
+            ) {
+                Ok(control) => Some(control),
+                Err(NetworkError::NullPointerError) => None,
+                Err(err) => return Err(IoOperationError::from(err))
+            },
             address,
             data,
             flags
