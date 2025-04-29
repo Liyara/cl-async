@@ -4,7 +4,7 @@ use std::{os::fd::{
 }, path::Path};
 
 use enum_dispatch::enum_dispatch;
-use crate::net::PeerAddress;
+use crate::{net::PeerAddress, OsError};
 use crate::Key;
 use data::{AsUringEntry, CompletableOperation};
 use super::{buffers::{IoDoubleInputBuffer, IoDoubleOutputBuffer}, IoCompletionResult, IoInputBuffer, IoMessage, IoOperationError, IoOutputBuffer, IoResult};
@@ -589,7 +589,7 @@ impl IoOperation {
         result_code: i32
     ) -> IoCompletionResult {
         if result_code < 0 {
-            Err(std::io::Error::from_raw_os_error(-result_code).into()) 
+            Err(OsError::from(-result_code).into()) 
         } else {
             self.t.get_completion(result_code as u32)
         }

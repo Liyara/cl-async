@@ -93,8 +93,6 @@ pub enum IoSubmissionError {
 
 #[derive(Debug, Error)]
 pub enum IoOperationError {
-    #[error("IO Error: {0}")]
-    Generic(#[from] std::io::Error),
 
     #[error("OS Error: {0}")]
     Os(#[from] OsError),
