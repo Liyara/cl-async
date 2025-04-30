@@ -1395,7 +1395,7 @@ impl<T: IoDoubleBuffer> PreparedIoMessageInner<T> {
             msghdr.msg_iovlen = data_mut._iovec.as_ref().map_or(0, |iov| iov.len() as _);
 
             msghdr.msg_control = data_mut.control.as_ref().map_or(std::ptr::null_mut(), |control| control.as_ptr() as *mut _);
-            msghdr.msg_controllen = data_mut.control.as_ref().map_or(0, |control| control.len() as _);
+            msghdr.msg_controllen = data_mut.control.as_ref().map_or(0, |control| control.capacity() as _);
         }
 
         Ok(pinned_self)
@@ -1457,8 +1457,13 @@ impl PreparedIoMessage<IoDoubleOutputBuffer> {
             Err(NetworkError::NullPointerError) => None,
             Err(err) => return Err(IoOperationError::from(err))
         };
+        let control_len = self.inner._msghdr.msg_controllen as usize;
 
-        let _control_buffer = self.inner.control.take();
+        let mut _control_buffer = self.inner.control.take();
+
+        if let Some(control) = &mut _control_buffer {
+            unsafe { control.set_len(control_len) };
+        }
 
         Ok(IoMessage {
             control,
