@@ -1042,7 +1042,9 @@ pub struct IoMessage {
     control: Option<Vec<IoControlMessage>>,
     address: Option<PeerAddress>,
     data: Option<Vec<Vec<u8>>>,
-    flags: Option<IoRecvMsgOutputFlags>
+    flags: Option<IoRecvMsgOutputFlags>,
+
+    _control_buffer: Option<Vec<u8>>,
 }
 
 impl IoMessage {
@@ -1057,6 +1059,7 @@ impl IoMessage {
             address,
             data: buffers,
             flags: None,
+            _control_buffer: None,
         }
     }
 
@@ -1237,6 +1240,10 @@ impl IoMessage {
         self.control.take()
     }
 
+    pub fn take_control_buffer(&mut self) -> Option<Vec<u8>> {
+        self._control_buffer.take()
+    }
+
     pub fn take_address(&mut self) -> Option<PeerAddress> {
         self.address.take()
     }
@@ -1255,6 +1262,10 @@ impl IoMessage {
 
     pub fn buffers(&self) -> Option<&Vec<Vec<u8>>> {
         self.data.as_ref()
+    }
+
+    pub fn control_buffer(&self) -> Option<&Vec<u8>> {
+        self._control_buffer.as_ref()
     }
 
     pub fn flags(&self) -> Option<IoRecvMsgOutputFlags> { self.flags }
@@ -1439,17 +1450,22 @@ impl PreparedIoMessage<IoDoubleOutputBuffer> {
 
         let flags = IoRecvMsgOutputFlags::from_bits(self.inner._msghdr.msg_flags);
 
+        let control = match IoControlMessage::try_parse_from_msghdr(
+            &self.inner._msghdr,
+        ) {
+            Ok(control) => Some(control),
+            Err(NetworkError::NullPointerError) => None,
+            Err(err) => return Err(IoOperationError::from(err))
+        };
+
+        let _control_buffer = self.inner.control.take();
+
         Ok(IoMessage {
-            control: match IoControlMessage::try_parse_from_msghdr(
-                &self.inner._msghdr,
-            ) {
-                Ok(control) => Some(control),
-                Err(NetworkError::NullPointerError) => None,
-                Err(err) => return Err(IoOperationError::from(err))
-            },
+            control,
             address,
             data,
-            flags
+            flags,
+            _control_buffer,
         })
     }
 }
@@ -1483,6 +1499,7 @@ impl Default for IoMessage {
             address: None,
             data: None,
             flags: None,
+            _control_buffer: None,
         }
     }
 }

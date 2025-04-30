@@ -113,6 +113,9 @@ pub enum OsError {
     #[error("Broken pipe")]
     BrokenPipe,
 
+    #[error("No buffer space available")]
+    NoBufferSpace,
+
     #[error("OS Error: {0}")]
     Generic(i32),
 }
@@ -175,6 +178,7 @@ impl From<i32> for OsError {
             libc::EHOSTUNREACH => OsError::PeerUnreachable,
             libc::EHOSTDOWN => OsError::PeerDisconnected,
             libc::EPIPE => OsError::BrokenPipe,
+            libc::ENOBUFS => OsError::NoBufferSpace,
             _ => OsError::Generic(os_error),
        } 
     }
@@ -219,6 +223,7 @@ impl Into<i32> for OsError {
             OsError::PeerDisconnected => libc::EHOSTDOWN,
             OsError::NotConnected => libc::ENOTCONN,
             OsError::BrokenPipe => libc::EPIPE,
+            OsError::NoBufferSpace => libc::ENOBUFS,
             OsError::UnknownError => -1
         }
     }
