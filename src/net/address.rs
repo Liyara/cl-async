@@ -261,6 +261,20 @@ impl IpAddress {
 
 }
 
+impl TryFrom<[u8; 4]> for IpAddress {
+    type Error = NetworkError;
+    fn try_from(addr: [u8; 4]) -> Result<Self, Self::Error> {
+        Ok(IpAddress::V4(addr))
+    }
+}
+
+impl TryFrom<[u8; 16]> for IpAddress {
+    type Error = NetworkError;
+    fn try_from(addr: [u8; 16]) -> Result<Self, Self::Error> {
+        Ok(IpAddress::V6(addr))
+    }
+}
+
 impl TryFrom<String> for IpAddress {
     type Error = NetworkError;
     fn try_from(ip: String) -> Result<Self, Self::Error> {
@@ -454,8 +468,8 @@ impl PeerAddress {
     pub fn ip(&self) -> &IpAddress { self.0.ip() }
     pub fn port(&self) -> Port { self.0.port() }
 
-    pub fn new(socket_address: SocketAddress) -> Self {
-        Self(socket_address)
+    pub fn new(ip: IpAddress, port: Port) -> Self {
+        Self(SocketAddress::new(ip, port))
     }
 
     pub fn as_socket_address(&self) -> &SocketAddress {
@@ -488,6 +502,12 @@ impl TryFrom<&RawFd> for PeerAddress {
     }
 }
 
+impl From<SocketAddress> for PeerAddress {
+    fn from(socket_address: SocketAddress) -> Self {
+        PeerAddress(socket_address)
+    }
+}
+
 impl TryInto<libc::sockaddr_storage> for PeerAddress {
     type Error = NetworkError;
     fn try_into(self) -> Result<libc::sockaddr_storage, NetworkError> {
@@ -516,8 +536,8 @@ impl LocalAddress {
     pub fn ip(&self) -> &IpAddress { self.0.ip() }
     pub fn port(&self) -> Port { self.0.port() }
 
-    pub fn new(socket_address: SocketAddress) -> Self {
-        Self(socket_address)
+    pub fn new(ip: IpAddress, port: Port) -> Self {
+        Self(SocketAddress::new(ip, port))
     }
 
     pub fn as_socket_address(&self) -> &SocketAddress {
@@ -604,6 +624,12 @@ impl TryFrom<&RawFd> for LocalAddress {
         let socket_address = SocketAddress::try_from(addr)?;
 
         Ok(LocalAddress(socket_address))
+    }
+}
+
+impl From<SocketAddress> for LocalAddress {
+    fn from(socket_address: SocketAddress) -> Self {
+        LocalAddress(socket_address)
     }
 }
 
@@ -925,7 +951,7 @@ mod tests {
 
      #[test]
     fn test_peer_address_creation() {
-        let pa = PeerAddress::new(
+        let pa = PeerAddress::from(
             SocketAddress::new(IpAddress::localhost_v6(), Port::https())
         );
         assert_eq!(pa.ip(), &IpAddress::localhost_v6());

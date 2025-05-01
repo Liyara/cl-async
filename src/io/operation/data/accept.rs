@@ -1,6 +1,6 @@
 use std::os::fd::RawFd;
 
-use crate::{net::PeerAddress, Key};
+use crate::{net::{PeerAddress, SocketAddress}, Key};
 
 pub struct IoAcceptData {
     addr: Box<libc::sockaddr_storage>,
@@ -22,8 +22,8 @@ impl super::CompletableOperation for IoAcceptData {
             crate::io::IoCompletion::Accept(
                 crate::io::completion_data::IoAcceptCompletion {
                     fd: result_code as RawFd,
-                    address: Some(PeerAddress::new(
-                        (*self.addr).try_into()?
+                    address: Some(PeerAddress::from(
+                        SocketAddress::try_from(*self.addr)?
                     ))
                 }
             )
