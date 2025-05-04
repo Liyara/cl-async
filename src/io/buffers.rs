@@ -1,75 +1,58 @@
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+
 use super::IoOperationError;
-
-
-pub trait IoBuffer : TryFrom<Vec<u8>, Error=IoOperationError> {
-    fn buffer_limit(&self) -> usize;
-    unsafe fn as_ptr(&self) -> *const u8;
-    unsafe fn as_mut_ptr(&mut self) -> *mut u8;
-}
 
 // INPUT BUFFER
 
-pub struct IoInputBuffer(Vec<u8>);
+
+// Represents a contiguous, immutable buffer for writing from.
+pub struct IoInputBuffer(Bytes);
 
 impl IoInputBuffer {
-    pub fn new(data: Vec<u8>) -> Result<Self, IoOperationError> {
+    pub fn new(data: Bytes) -> Result<Self, IoOperationError> {
 
+        // Writing empty data is incoherent
         if data.is_empty() { 
             return Err(IoOperationError::NoData.into()); 
+        }
+
+        /* 
+            MUST be a contiguous buffer
+
+            For non-contiguous writes, look at IoVecInputBuffer / writev
+        
+        */
+        if data.chunk().len() != data.len() {
+            return Err(IoOperationError::InvalidPtr.into());
         }
 
         Ok(Self(data))
     }
 
-    pub fn into_vec(self) -> Vec<u8> { self.0 }
-}
+    pub fn into_bytes(self) -> Bytes { self.0 }
 
-impl IoBuffer for IoInputBuffer {
-    fn buffer_limit(&self) -> usize {
-        self.0.len()
-    }
-
-    unsafe fn as_ptr(&self) -> *const u8 {
+    pub unsafe fn as_ptr(&self) -> *const u8 {
         self.0.as_ptr()
     }
 
-    unsafe fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.0.as_mut_ptr()
+    pub fn readable_len(&self) -> usize {
+        self.0.len()
     }
 }
-
-impl TryFrom<Vec<u8>> for IoInputBuffer {
-    type Error = IoOperationError;
-
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl AsRef<[u8]> for IoInputBuffer {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl AsMut<[u8]> for IoInputBuffer {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-}
-
 // OUTPUT BUFFER
 
-pub struct IoOutputBuffer(Vec<u8>);
+// Represents a contiguous, mutable buffer for reading into.
+pub struct IoOutputBuffer(BytesMut);
 
 impl IoOutputBuffer {
 
     pub fn with_capacity(capacity: usize) -> Self {
-        Self(Vec::with_capacity(capacity))
+        Self(BytesMut::with_capacity(capacity))
     }
     
-    pub fn new(data: Vec<u8>) -> Result<Self, IoOperationError> {
+    pub fn new(data: BytesMut) -> Result<Self, IoOperationError> {
 
+        // There must be some space to write into
         if data.capacity() == 0 {
             return Err(IoOperationError::InvalidPtr.into());
         }
@@ -77,197 +60,147 @@ impl IoOutputBuffer {
         Ok(Self(data))
     }
 
-    pub fn into_vec(mut self, len: usize) -> Result<Vec<u8>, IoOperationError> {
+    pub fn into_bytes(mut self, len: usize) -> Result<BytesMut, IoOperationError> {
 
-        if len > self.0.capacity() {
+        let chunk = self.0.chunk_mut();
+
+        if len > chunk.len() {
             return Err(IoOperationError::BufferOverflow(
-                self.0.capacity(), 
+                chunk.len(), 
                 len
             ).into());
         }
 
-        unsafe { self.0.set_len(len); }
+        unsafe { self.0.advance_mut(len); }
 
         Ok(self.0)
     }
 
-    pub fn write(&mut self, data: &[u8], offset: usize) -> Result<usize, IoOperationError> {
+    pub unsafe fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.0.chunk_mut().as_mut_ptr()
+    }
 
-        if self.0.capacity() < data.len() + offset {
-            return Err(IoOperationError::BufferOverflow(
-                self.0.capacity(), 
-                data.len()
-            ).into());
-        }
-
-        unsafe {
-            std::ptr::copy(
-                data.as_ptr(),
-                self.0.as_mut_ptr().add(offset),
-                data.len()
-            );
-        }
-
-        Ok(data.len())
+    pub fn writable_len(&mut self) -> usize {
+        self.0.chunk_mut().len()
     }
 
 }
 
-impl IoBuffer for IoOutputBuffer {
-    fn buffer_limit(&self) -> usize {
-        self.0.capacity()
-    }
-
-    unsafe fn as_ptr(&self) -> *const u8 {
-        self.0.as_ptr()
-    }
-
-    unsafe fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.0.as_mut_ptr()
-    }
-}
-
-impl TryFrom<Vec<u8>> for IoOutputBuffer {
-    type Error = IoOperationError;
-
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
 
 pub trait GenerateIoVecs {
     unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoOperationError>;
 }
 
-pub trait IoDoubleBuffer: GenerateIoVecs + TryFrom<Vec<Vec<u8>>, Error=IoOperationError> {
-    fn buffer_limit(&self, index: usize) -> Result<usize, IoOperationError>;
-    fn len(&self) -> usize;
-    unsafe fn as_ptr(&self, index: usize) -> Result<*const u8, IoOperationError>;
-    unsafe fn as_mut_ptr(&mut self, index: usize) -> Result<*mut u8, IoOperationError>;
+pub enum IoVecInputSource {
+    Single(Bytes),
+    Multiple(Vec<Bytes>),
 }
 
-fn generate_iovecs<T: IoDoubleBuffer>(buffers: &mut T) -> Result<Vec<libc::iovec>, IoOperationError> {
-    let mut iovecs = Vec::with_capacity(buffers.len());
-    for i in 0..buffers.len() {
-        let iov = libc::iovec {
-            iov_base: unsafe { buffers.as_mut_ptr(i)? as *mut libc::c_void },
-            iov_len: buffers.buffer_limit(i)? as libc::size_t,
-        };
-        iovecs.push(iov);
-    }
-    Ok(iovecs)
-}
+// Represents a non-contiguous, immutable buffer for writing from.
+pub struct IoVecInputBuffer(IoVecInputSource);
 
-// DOUBLE INPUT BUFFER
+impl IoVecInputBuffer {
 
-pub struct IoDoubleInputBuffer(Vec<Vec<u8>>);
-
-impl IoDoubleInputBuffer {
-
-    pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self, IoOperationError> {
-
-        if buffers.is_empty() {
+    pub fn new_single(data: Bytes) -> Result<Self, IoOperationError> {
+        if data.is_empty() {
             return Err(IoOperationError::NoData.into());
         }
 
-        for buffer in &buffers {
-            if buffer.is_empty() {
+        Ok(Self(IoVecInputSource::Single(data)))
+    }
+
+    pub fn new_multiple(data: Vec<Bytes>) -> Result<Self, IoOperationError> {
+        if data.is_empty() {
+            return Err(IoOperationError::NoData.into());
+        }
+
+        for bytes in &data {
+            if bytes.is_empty() {
                 return Err(IoOperationError::NoData.into());
             }
         }
 
-        Ok(Self(buffers))
+        Ok(Self(IoVecInputSource::Multiple(data)))
     }
 
-    pub fn into_vec(self) -> Vec<Vec<u8>> { self.0 }
+    pub fn into_source(self) -> IoVecInputSource {
+        self.0
+    }
+
+    fn generate_iovecs_single(mut bytes: Bytes) -> Vec<libc::iovec> {
+        let mut iovecs = Vec::new();
+
+        while bytes.has_remaining() {
+            let chunk = bytes.chunk();
+            let len = chunk.len();
+
+            if len == 0 { break; }
+
+            let iovec = libc::iovec {
+                iov_base: chunk.as_ptr() as *mut libc::c_void,
+                iov_len: len,
+            };
+
+            iovecs.push(iovec);
+            bytes.advance(len);
+        }
+
+        iovecs
+    }
 }
 
-impl GenerateIoVecs for IoDoubleInputBuffer {
+impl GenerateIoVecs for IoVecInputBuffer {
     unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoOperationError> {
-        generate_iovecs(self)
+        match self.0 {
+            IoVecInputSource::Single(ref mut bytes) => {
+                let iovecs = Self::generate_iovecs_single(bytes.clone());
+                if iovecs.is_empty() {
+                    return Err(IoOperationError::NoData.into());
+                }
+                Ok(iovecs)
+            },
+            IoVecInputSource::Multiple(ref mut vec) => {
+                let mut iovecs = Vec::new();
+                for bytes in vec.iter_mut() {
+                    let iovecs_single = Self::generate_iovecs_single(bytes.clone());
+                    iovecs.extend(iovecs_single);
+                    if iovecs.is_empty() { break; }
+                }
+                if iovecs.is_empty() {
+                    return Err(IoOperationError::NoData.into());
+                }
+                Ok(iovecs)
+            },
+        }
     }
 }
 
-impl IoDoubleBuffer for IoDoubleInputBuffer {
+// Represents a non-contiguous, mutable buffer for reading into.
+pub struct IoVecOutputBuffer(Vec<BytesMut>);
 
-    fn buffer_limit(&self, index: usize) -> Result<usize, IoOperationError> {
-        if index >= self.0.len() {
-            return Err(IoOperationError::OutOfBounds(index).into());
+impl IoVecOutputBuffer {
+    pub fn new(data: Vec<BytesMut>) -> Result<Self, IoOperationError> {
+
+        // There must be some space to write into
+        if data.is_empty() {
+            return Err(IoOperationError::InvalidPtr.into());
         }
 
-        Ok(self.0[index].len())
+        Ok(Self(data))
     }
 
-    fn len(&self) -> usize { self.0.len() }
-
-    unsafe fn as_ptr(&self, index: usize) -> Result<*const u8, IoOperationError> {
-        if index >= self.0.len() {
-            return Err(IoOperationError::OutOfBounds(index).into());
-        }
-
-        Ok(self.0[index].as_ptr())
-    }
-
-    unsafe fn as_mut_ptr(&mut self, index: usize) -> Result<*mut u8, IoOperationError> {
-        if index >= self.0.len() {
-            return Err(IoOperationError::OutOfBounds(index).into());
-        }
-
-        Ok(self.0[index].as_mut_ptr())
-    }
-}
-
-impl AsRef<[Vec<u8>]> for IoDoubleInputBuffer {
-    fn as_ref(&self) -> &[Vec<u8>] {
-        &self.0
-    }
-}
-
-impl AsMut<[Vec<u8>]> for IoDoubleInputBuffer {
-    fn as_mut(&mut self) -> &mut [Vec<u8>] {
-        &mut self.0
-    }
-}
-
-impl TryFrom<Vec<Vec<u8>>> for IoDoubleInputBuffer {
-    type Error = IoOperationError;
-
-    fn try_from(value: Vec<Vec<u8>>) -> Result<Self, Self::Error> {
-        IoDoubleInputBuffer::new(value)
-    }
-}
-
-// DOUBLE OUTPUT BUFFER
-
-pub struct IoDoubleOutputBuffer(Vec<Vec<u8>>);
-
-impl IoDoubleOutputBuffer {
-
-    pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self, IoOperationError> {
-
-        if buffers.is_empty() {
-            return Err(IoOperationError::NoData.into());
-        }
-
-        for buffer in &buffers {
-            if buffer.capacity() == 0 {
-                return Err(IoOperationError::InvalidPtr.into());
-            }
-        }
-
-        Ok(Self(buffers))
-    }
-
-    pub fn into_vec(mut self, total_bytes: usize) -> Result<Vec<Vec<u8>>, IoOperationError> {
+    pub fn into_bytes(mut self, total_bytes: usize) -> Result<Vec<BytesMut>, IoOperationError> {
         let mut accounted_bytes = 0;
 
         for buffer in &mut self.0 {
+            let uninit = buffer.chunk_mut();
+
             let bytes_in_this_buffer = total_bytes
                 .saturating_sub(accounted_bytes)
-                .min(buffer.capacity())
+                .min(uninit.len())
             ;
-    
-            unsafe { buffer.set_len(bytes_in_this_buffer); }
+
+            unsafe { buffer.advance_mut(bytes_in_this_buffer); }
             accounted_bytes += bytes_in_this_buffer;
         }
 
@@ -280,48 +213,34 @@ impl IoDoubleOutputBuffer {
 
         Ok(self.0)
     }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
-impl GenerateIoVecs for IoDoubleOutputBuffer {
+impl GenerateIoVecs for IoVecOutputBuffer {
     unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoOperationError> {
-        generate_iovecs(self)
-    }
-}
+        let mut iovecs = Vec::new();
 
-impl IoDoubleBuffer for IoDoubleOutputBuffer {
+        for buffer in &mut self.0 {
+            let chunk = buffer.chunk_mut();
+            let len = chunk.len();
 
-    fn buffer_limit(&self, index: usize) -> Result<usize, IoOperationError> {
-        if index >= self.0.len() {
-            return Err(IoOperationError::OutOfBounds(index).into());
+            if len == 0 { break; }
+
+            let iovec = libc::iovec {
+                iov_base: chunk.as_mut_ptr() as *mut libc::c_void,
+                iov_len: len,
+            };
+
+            iovecs.push(iovec);
         }
 
-        Ok(self.0[index].capacity())
-    }
-
-    fn len(&self) -> usize { self.0.len() }
-
-    unsafe fn as_ptr(&self, index: usize) -> Result<*const u8, IoOperationError> {
-        if index >= self.0.len() {
-            return Err(IoOperationError::OutOfBounds(index).into());
+        if iovecs.is_empty() {
+            return Err(IoOperationError::NoData.into());
         }
 
-        Ok(self.0[index].as_ptr())
-    }
-
-    unsafe fn as_mut_ptr(&mut self, index: usize) -> Result<*mut u8, IoOperationError> {
-        if index >= self.0.len() {
-            return Err(IoOperationError::OutOfBounds(index).into());
-        }
-
-        Ok(self.0[index].as_mut_ptr())
+        Ok(iovecs)
     }
 }
-
-impl TryFrom<Vec<Vec<u8>>> for IoDoubleOutputBuffer {
-    type Error = IoOperationError;
-
-    fn try_from(value: Vec<Vec<u8>>) -> Result<Self, Self::Error> {
-        IoDoubleOutputBuffer::new(value)
-    }
-}
-

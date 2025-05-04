@@ -35,7 +35,7 @@ impl super::CompletableOperation for IoRecvData {
             crate::io::IoOperationError::NoData
         )?;
         let len = result_code as usize;
-        let data = buffer.into_vec(len)?;
+        let data = buffer.into_bytes(len)?;
         Ok(crate::io::IoCompletion::Read(crate::io::completion_data::IoReadCompletion {
             data,
         }))
@@ -50,7 +50,7 @@ impl super::AsUringEntry for IoRecvData {
             io_uring::opcode::Recv::new(
                 io_uring::types::Fd(fd),
                 buffer.as_mut_ptr(),
-                buffer.buffer_limit() as u32,
+                buffer.writable_len() as u32,
             ).flags(self.flags.bits())
             .build().user_data(key.as_u64())
         }

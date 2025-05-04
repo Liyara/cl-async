@@ -2,7 +2,7 @@ use std::os::fd::RawFd;
 use bitflags::bitflags;
 use parking_lot::Mutex;
 
-use crate::{io::{message::PreparedIoMessageAddressDirection, IoDoubleOutputBuffer, IoError, IoOperationError, PreparedIoMessage}, Key};
+use crate::{io::{IoDoubleOutputBuffer, IoError, IoOperationError, PreparedIoMessage}, Key};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

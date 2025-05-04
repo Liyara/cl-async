@@ -20,7 +20,7 @@ impl super::CompletableOperation for IoReadData {
             crate::io::IoOperationError::NoData
         )?;
         let len = result_code as usize;
-        let data = buffer.into_vec(len)?;
+        let data = buffer.into_bytes(len)?;
         Ok(crate::io::IoCompletion::Read(crate::io::completion_data::IoReadCompletion {
             data
         }))
@@ -36,7 +36,7 @@ impl super::AsUringEntry for IoReadData {
             io_uring::opcode::Read::new(
                 io_uring::types::Fd(fd),
                 buffer.as_mut_ptr(),
-                buffer.buffer_limit() as u32
+                buffer.writable_len() as u32,
             ).offset(self.offset as u64)
             .build().user_data(key.as_u64())
         }

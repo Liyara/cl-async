@@ -10,13 +10,15 @@ pub mod data {
 
     use std::{os::fd::RawFd, path::PathBuf};
 
+    use bytes::BytesMut;
+
     use crate::{
         io::{operation_data::IoStatxMask, IoMessage},
         net::PeerAddress, 
     };
 
     pub struct IoReadCompletion {
-        pub data: Vec<u8>,
+        pub bytes_read: usize,
     }
 
     pub struct IoWriteCompletion {
@@ -24,7 +26,8 @@ pub mod data {
     }
 
     pub struct IoMultiReadCompletion {
-        pub data: Vec<Vec<u8>>,
+        pub buffers: Vec<BytesMut>,
+        pub bytes_read: usize,
     }
 
     pub struct IoMsgCompletion {

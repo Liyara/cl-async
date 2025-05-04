@@ -1,8 +1,10 @@
 use std::{fmt, os::fd::RawFd, pin::Pin, ptr::read_unaligned};
 
+use bytes::{Bytes, BytesMut};
+
 use crate::net::{IpAddress, IpVersion, NetworkError, PeerAddress};
 
-use super::{buffers::IoDoubleBuffer, completion::TryFromCompletion, operation::future::IoOperationFuture, operation_data::IoRecvMsgOutputFlags, IoCompletion, IoDoubleInputBuffer, IoDoubleOutputBuffer, IoError, IoInputBuffer, IoOperationError};
+use super::{completion::TryFromCompletion, operation::future::IoOperationFuture, operation_data::IoRecvMsgOutputFlags, GenerateIoVecs, IoBuffer, IoCompletion, IoDoubleInputBuffer, IoDoubleOutputBuffer, IoError, IoInputBuffer, IoOperationError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(u8)]
@@ -1038,7 +1040,30 @@ impl IoControlMessage {
     }
 }
 
-pub struct IoMessage {
+pub struct IoSendMessage {
+    pub control: Option<Vec<IoControlMessage>>,
+    pub address: Option<PeerAddress>,
+    pub data: Option<Vec<Bytes>>,
+}
+
+pub struct IoRecvMessage {
+    pub control: Option<BytesMut>,
+    pub address: Option<PeerAddress>,
+    pub data: Option<Vec<BytesMut>>,
+    pub flags: Option<IoRecvMsgOutputFlags>,
+}
+
+pub enum IoMessage {
+    Send(IoSendMessage),
+    Recv(IoRecvMessage),
+}
+
+pub struct IoMessageError {
+    pub error: IoOperationError,
+    pub message: IoMessage,
+}
+
+/*pub struct IoMessage {
     control: Option<Vec<IoControlMessage>>,
     address: Option<PeerAddress>,
     data: Option<Vec<Vec<u8>>>,
@@ -1331,8 +1356,8 @@ pub enum PreparedIoMessageAddressDirection {
     Output,
 }
 
-pub struct PreparedIoMessageInner<T: IoDoubleBuffer> {
-    buffers: Option<T>, // Application data buffers
+pub struct PreparedIoMessageInner<T: IoBuffer> {
+    buffers: Option<Vec<T>>, // Application data buffers
     control: Option<Vec<u8>>, // Control buffer
     address: Option<libc::sockaddr_storage>, // Address storage
 
@@ -1341,9 +1366,12 @@ pub struct PreparedIoMessageInner<T: IoDoubleBuffer> {
     _msghdr: libc::msghdr,
 }
 
-impl<T: IoDoubleBuffer> PreparedIoMessageInner<T> {
+impl<T: IoBuffer> PreparedIoMessageInner<T> 
+where
+    Vec<T>: GenerateIoVecs
+{
     pub fn new(
-        mut buffers: Option<T>,
+        mut buffers: Option<Vec<T>>,
         control: Option<Vec<u8>>,
         address: PreparedIoMessageAddressDirection,
     ) -> Result<Pin<Box<Self>>, IoOperationError> {
@@ -1402,15 +1430,18 @@ impl<T: IoDoubleBuffer> PreparedIoMessageInner<T> {
     }
 }
 
-pub struct PreparedIoMessage<T: IoDoubleBuffer> {
+pub struct PreparedIoMessage<T: IoBuffer> {
     // Using pin because PreparedIoMessageInner is self-referential
     inner: Pin<Box<PreparedIoMessageInner<T>>>,
 }
 
-impl<T: IoDoubleBuffer> PreparedIoMessage<T> {
+impl<T: IoBuffer> PreparedIoMessage<T> 
+where
+    Vec<T>: GenerateIoVecs
+{
 
     pub fn new(
-        buffers: Option<T>,
+        buffers: Option<Vec<T>>,
         control: Option<Vec<u8>>,
         address: PreparedIoMessageAddressDirection
     ) -> Result<Self, IoOperationError> {
@@ -1475,13 +1506,13 @@ impl PreparedIoMessage<IoDoubleOutputBuffer> {
     }
 }
 
-impl<T: IoDoubleBuffer> AsRef<libc::msghdr> for PreparedIoMessage<T> {
+impl<T: IoBuffer> AsRef<libc::msghdr> for PreparedIoMessage<T> {
     fn as_ref(&self) -> &libc::msghdr {
         &self.inner._msghdr
     }
 }
 
-impl<T: IoDoubleBuffer> AsMut<libc::msghdr> for PreparedIoMessage<T> {
+impl<T: IoBuffer> AsMut<libc::msghdr> for PreparedIoMessage<T> {
     fn as_mut(&mut self) -> &mut libc::msghdr {
         unsafe { &mut Pin::get_unchecked_mut(self.inner.as_mut())._msghdr }
     }
@@ -1494,7 +1525,7 @@ impl<T: IoDoubleBuffer> AsMut<libc::msghdr> for PreparedIoMessage<T> {
     * This type is only used in strictly regulated code paths
 
 */
-unsafe impl<T: IoDoubleBuffer> Send for PreparedIoMessage<T> {}
+unsafe impl<T: IoBuffer> Send for PreparedIoMessage<T> {}
 
 impl Default for IoMessage {
 
@@ -1668,4 +1699,4 @@ mod tests {
         let result = unsafe { from_msg_in_single::<libc::ucred>(&msg_in) };
         assert!(result.is_err());
     }
-}
+}*/

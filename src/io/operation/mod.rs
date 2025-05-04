@@ -7,7 +7,7 @@ use enum_dispatch::enum_dispatch;
 use crate::{net::PeerAddress, OsError};
 use crate::Key;
 use data::{AsUringEntry, CompletableOperation};
-use super::{buffers::{IoDoubleInputBuffer, IoDoubleOutputBuffer}, IoCompletionResult, IoInputBuffer, IoMessage, IoOperationError, IoOutputBuffer, IoResult};
+use super::{IoCompletionResult, IoInputBuffer, IoMessage, IoOperationError, IoOutputBuffer, IoResult};
 
 pub mod data;
 

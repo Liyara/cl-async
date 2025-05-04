@@ -1,13 +1,13 @@
 use parking_lot::Mutex;
-use crate::io::{buffers::{IoDoubleBuffer, IoDoubleOutputBuffer}, GenerateIoVecs, IoResult};
+use crate::io::{buffers::IoVecOutputBuffer, GenerateIoVecs, IoResult};
 
 struct IoReadvDataInner {
-    iovec: Option<IoDoubleOutputBuffer>,
+    iovec: Option<IoVecOutputBuffer>,
     _iovec_ptr: Vec<libc::iovec>
 }
 
 impl IoReadvDataInner {
-    fn new(mut iovec: IoDoubleOutputBuffer) -> IoResult<Self> {
+    fn new(mut iovec: IoVecOutputBuffer) -> IoResult<Self> {
         
         let _iovec_ptr = unsafe { iovec.generate_iovecs()? };
 
@@ -26,7 +26,7 @@ pub struct IoReadvData {
 }
 
 impl IoReadvData {
-    pub fn new(iovec: IoDoubleOutputBuffer, offset: usize) -> IoResult<Self> {
+    pub fn new(iovec: IoVecOutputBuffer, offset: usize) -> IoResult<Self> {
         Ok(Self {
             inner: Mutex::new(IoReadvDataInner::new(iovec)?),
             offset
@@ -39,7 +39,7 @@ impl super::CompletableOperation for IoReadvData {
         
         let data = match self.inner.lock().iovec.take() {
             Some(iovec) => {
-                iovec.into_vec(result_code as usize)?
+                iovec.into_bytes(result_code as usize)?
             },
             None => {
                 return Err(crate::io::IoOperationError::NoData);
@@ -55,11 +55,10 @@ impl super::CompletableOperation for IoReadvData {
 impl super::AsUringEntry for IoReadvData {
     fn as_uring_entry(&mut self, fd: std::os::fd::RawFd, key: crate::Key) -> io_uring::squeue::Entry {
         let inner = self.inner.lock();
-        let iovec = inner.iovec.as_ref().unwrap();
         io_uring::opcode::Readv::new(
             io_uring::types::Fd(fd),
             inner._iovec_ptr.as_ptr(),
-            iovec.len() as u32
+            inner._iovec_ptr.len() as u32,
         ).offset(self.offset as u64)
         .build().user_data(key.as_u64())
     }

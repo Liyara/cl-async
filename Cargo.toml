@@ -30,6 +30,7 @@ async-channel = "2.3.1"
 async-broadcast = "0.7.2"
 futures = "0.3.31"
 sysctl = "0.6.0"
+bytes = "1.10.1"
 
 [[bin]]
 name = "cl-async"
