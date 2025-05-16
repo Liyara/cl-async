@@ -2,7 +2,7 @@ use thiserror::Error;
 
 
 
-#[derive(Debug, Error, Clone, Eq, PartialEq)]
+#[derive(Debug, Error, Clone, Copy, Eq, PartialEq)]
 pub enum OsError {
 
     #[error("Maximum number of file descriptors reached")]

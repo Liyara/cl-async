@@ -1,6 +1,6 @@
 use std::{ffi::CString, os::unix::ffi::OsStrExt, path::Path};
 
-use crate::io::IoSubmissionResult;
+use crate::io::IoSubmissionError;
 
 use super::open_at::IoFileSystemMode;
 
@@ -10,7 +10,7 @@ pub struct IoMkdirData {
 }
 
 impl IoMkdirData {
-    pub fn new(path: &Path, mode: IoFileSystemMode) -> IoSubmissionResult<Self> {
+    pub fn new(path: &Path, mode: IoFileSystemMode) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             path: CString::new(path.as_os_str().as_bytes())?,
             mode
@@ -18,11 +18,7 @@ impl IoMkdirData {
     }
 }
 
-impl super::CompletableOperation for IoMkdirData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Success)
-    }
-}
+impl super::CompletableOperation for IoMkdirData {}
 
 impl super::AsUringEntry for IoMkdirData {
     fn as_uring_entry(&mut self, fd: std::os::fd::RawFd, key: crate::Key) -> io_uring::squeue::Entry {

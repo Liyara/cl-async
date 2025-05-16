@@ -1,5 +1,4 @@
-use parking_lot::Mutex;
-use crate::io::{buffers::IoVecOutputBuffer, GenerateIoVecs, IoResult};
+use crate::io::{buffers::IoVecOutputBuffer, failure::{data::IoMultiReadFailure, IoFailure}, GenerateIoVecs, IoSubmissionError};
 
 struct IoReadvDataInner {
     iovec: Option<IoVecOutputBuffer>,
@@ -7,7 +6,7 @@ struct IoReadvDataInner {
 }
 
 impl IoReadvDataInner {
-    fn new(mut iovec: IoVecOutputBuffer) -> IoResult<Self> {
+    fn new(mut iovec: IoVecOutputBuffer) -> Result<Self, IoSubmissionError> {
         
         let _iovec_ptr = unsafe { iovec.generate_iovecs()? };
 
@@ -19,42 +18,70 @@ impl IoReadvDataInner {
 }
 
 unsafe impl Send for IoReadvDataInner {}
+unsafe impl Sync for IoReadvDataInner {}
 
 pub struct IoReadvData {
-    inner: Mutex<IoReadvDataInner>,
+    inner: IoReadvDataInner,
     offset: usize,
 }
 
 impl IoReadvData {
-    pub fn new(iovec: IoVecOutputBuffer, offset: usize) -> IoResult<Self> {
+    pub fn new(iovec: IoVecOutputBuffer, offset: usize) -> Result<Self, IoSubmissionError> {
         Ok(Self {
-            inner: Mutex::new(IoReadvDataInner::new(iovec)?),
+            inner: IoReadvDataInner::new(iovec)?,
             offset
         })
+    }
+
+    pub fn buffers(&self) -> Option<&IoVecOutputBuffer> {
+        self.inner.iovec.as_ref()
+    }
+
+    pub fn into_buffers(mut self) -> Option<IoVecOutputBuffer> {
+        self.inner.iovec.take()
     }
 }     
 
 impl super::CompletableOperation for IoReadvData {
-    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletionResult {
-        
-        let data = match self.inner.lock().iovec.take() {
-            Some(iovec) => {
-                iovec.into_bytes(result_code as usize)?
-            },
-            None => {
-                return Err(crate::io::IoOperationError::NoData);
-            }
-        };
 
-        Ok(crate::io::IoCompletion::MultiRead(crate::io::completion_data::IoMultiReadCompletion {
-            data,
-        }))
+    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletion {
+
+        let bytes_read = result_code as usize;
+        
+        let buffers = self.inner.iovec.take().map(|b| {
+            match b.into_bytes(bytes_read) {
+                Ok(buffer) => buffer,
+                Err(e) => {
+                    warn!("cl-async: readv(): Issue while advancing buffer: {e}");
+                    e.into_buffers()
+                }
+            }
+        }).unwrap_or({
+            warn!("cl-async: readv(): Expected buffer but got None; returning empty buffer vec.");
+            Vec::new()
+        });
+
+        crate::io::IoCompletion::MultiRead(crate::io::completion_data::IoMultiReadCompletion {
+            buffers,
+            bytes_read,
+        })
+    }
+
+    fn get_failure(&mut self) -> crate::io::failure::IoFailure {
+        IoFailure::MultiRead(IoMultiReadFailure {
+            buffers: self.inner.iovec.take().map(|b| {
+                b.into_vec()
+            }).unwrap_or({
+                warn!("cl-async: readv(): Expected buffer but got None; returning empty buffer vec.");
+                Vec::new()
+            }),
+        })
     }
 }
 
 impl super::AsUringEntry for IoReadvData {
     fn as_uring_entry(&mut self, fd: std::os::fd::RawFd, key: crate::Key) -> io_uring::squeue::Entry {
-        let inner = self.inner.lock();
+        let inner = &mut self.inner;
         io_uring::opcode::Readv::new(
             io_uring::types::Fd(fd),
             inner._iovec_ptr.as_ptr(),

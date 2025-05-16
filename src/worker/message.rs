@@ -1,7 +1,5 @@
 use crate::{
-    io::IoSubmission, 
-    task::TaskId, 
-    Task
+    io::IoSubmission, task::TaskId, Task
 };
 
 
@@ -10,8 +8,8 @@ pub enum Message {
     SpawnTasks(Vec<Task>),
     WakeTask(TaskId),
     SubmitIO(IoSubmission),
-    SubmitIOMulti(Vec<IoSubmission>),
     Continue(std::task::Waker),
+    RepairMessageChannel,
     Shutdown,
     Kill,
 }

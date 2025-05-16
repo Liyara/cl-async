@@ -1,10 +1,45 @@
 use std::{ffi::{OsStr, OsString}, os::{fd::{AsRawFd, FromRawFd, RawFd}, unix::ffi::OsStrExt}, path::{Path, PathBuf}, sync::Arc};
 
-use crate::{io::{completion::TryFromCompletion, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoStatxFlags, IoStatxMask}, IoCompletion, IoError, IoOperation, IoOperationError, IoResult, OwnedFdAsync}, OsError};
+use thiserror::Error;
+
+use crate::{io::{completion::TryFromCompletion, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoStatxFlags, IoStatxMask}, IoCompletion, IoError, IoOperation, OwnedFdAsync}, OsError};
 
 use super::{IoStatsFuture, Stats};
 
 pub type IoDirectoryFuture = IoOperationFuture<crate::io::fs::Directory>;
+
+#[derive(Debug, Error)]
+pub enum MkdirError {
+
+    #[error("IO error occured while creating directory: {0}")]
+    IoError(#[from] IoError),
+
+    #[error("Object exists, but is not a directory")]
+    NotADirectory,
+
+    #[error("Failed to retrieve descriptor type for path: {0}")]
+    FailedToRetrieveDescriptorType(PathBuf),
+}
+
+impl MkdirError {
+    pub fn as_os_error(&self) -> Option<&OsError> {
+        match self {
+            MkdirError::IoError(e) => e.as_os_error(),
+            _ => None,   
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum OpenDirectoryError {
+
+    #[error("Failed to create directory for opening: {0}")]
+    MkdirError(#[from] MkdirError),
+
+    #[error("Failed to open directory: {0}")]
+    OpenError(#[from] IoError),
+}
+
 
 #[derive(Clone)]
 pub struct Directory {
@@ -14,82 +49,37 @@ pub struct Directory {
 
 impl Directory {
 
-    pub async fn check(path: &Path) -> Result<Option<IoFileSystemMode>, IoError> {
-        let result = IoStatsFuture::new(
-            IoOperation::stats_path(
-                path,
-                IoStatxFlags::DEFAULT,
-                IoStatxMask::MODE
-            )?
-        ).await;
-
-        let stats = match result {
-
-            Ok(stats) => stats,
-
-            // ENOENT
-            Err(IoError::Operation(IoOperationError::Os(OsError::NotFound))) => {
-                return Ok(None);
-            },
-
-            Err(e) => {
-                return Err(e);
-            }
-        };
-
-        match stats.descriptor_type {
-            Some(IoFileDescriptorType::DIRECTORY) => {},
-            Some(_) => {
-                return Err(IoOperationError::Os(OsError::NotADirectory).into());
-            },
-            None => {
-                return Err(IoOperationError::NoData.into());
-            }
-        }
-
-        match stats.mode {
-            Some(mode) => Ok(Some(mode)),
-            None => Err(IoOperationError::NoData.into())
-        }
-
-    }
-
     pub async fn mkdir_recursive(
         path: &Path,
         desired_mode: IoFileSystemMode,
-    ) -> Result<(), IoError>  {
+    ) -> Result<(), MkdirError>  {
 
         match Self::mkdir(path, desired_mode).await {
 
             Ok(()) => Ok(()),
 
             Err(e) => {
-                match e {
-                    IoError::Operation(
-                        IoOperationError::Os(OsError::NotFound)
-                    ) => {        
-                        match path.parent() {
-                            Some(parent) => {
+                if let Some(OsError::NotFound) = e.as_os_error() {   
+                    match path.parent() {
+                        Some(parent) => {
 
-                                if parent == path || parent.as_os_str().is_empty() {
-                                    Err(e)
-                                } else {
+                            if parent == path || parent.as_os_str().is_empty() {
+                                Err(e)
+                            } else {
 
-                                    Box::pin(
-                                        Self::mkdir_recursive(
-                                            parent,
-                                            desired_mode
-                                        )
-                                    ).await?;
+                                Box::pin(
+                                    Self::mkdir_recursive(
+                                        parent,
+                                        desired_mode
+                                    )
+                                ).await?;
 
-                                    Self::mkdir(path, desired_mode).await
-                                }
-                            },
-                            None => Err(e)
-                        }
-                    },
-                    _ => Err(e)
-                }       
+                                Self::mkdir(path, desired_mode).await
+                            }
+                        },
+                        None => Err(e)
+                    }
+                } else { Err(e) }
             }
         }
         
@@ -98,24 +88,22 @@ impl Directory {
     pub async fn mkdir(
         path: &Path,
         desired_mode: IoFileSystemMode,
-    ) -> Result<(), IoError> {
+    ) -> Result<(), MkdirError> {
         if let Err(e) = IoVoidFuture::new(
             IoOperation::mkdir(
                 path,
                 desired_mode.to_directory_safe()
-            )?
+            ).map_err(IoError::from)?
         ).await {
             // EEXIST
-            if let IoError::Operation(
-                IoOperationError::Os(OsError::AlreadyExists)
-            ) = e {
+            if let Some(OsError::AlreadyExists) = e.as_os_error() {
 
                 let result = IoStatsFuture::new(
                     IoOperation::stats_path(
                         path,
                         IoStatxFlags::DEFAULT,
                         IoStatxMask::TYPE
-                    )?
+                    ).map_err(IoError::from)?
                 ).await?;
 
                 match result.descriptor_type {
@@ -123,15 +111,16 @@ impl Directory {
                         Ok(())
                     },
                     Some(_) => {
-                        Err(IoOperationError::Os(OsError::NotADirectory).into())
+                        Err(MkdirError::NotADirectory)
                     },
                     None => {
-                        // Redundant check, this should never happen
-                        Err(IoOperationError::NoData.into())
+                        Err(MkdirError::FailedToRetrieveDescriptorType(
+                            path.to_path_buf()
+                        ))
                     }
                 }
             } 
-            else { Err(e) }
+            else { Err(e.into()) }
         } else { Ok(()) }
     }
 
@@ -148,9 +137,9 @@ impl Directory {
     pub async fn open(
         path: &Path,
         mode: IoFileSystemMode,
-    ) -> Result<Self, IoError> {
+    ) -> Result<Self, OpenDirectoryError> {
         Self::mkdir_recursive(path, mode).await?;
-        Self::open_unchecked(path).await
+        Ok(Self::open_unchecked(path).await?)
     }
 
     pub async fn open_unchecked(path: &Path) -> Result<Self, IoError> {
@@ -178,31 +167,25 @@ impl Directory {
         ).await?)
     }
 
-    unsafe fn _iter(fd: RawFd) -> Result<DirectoryStream, IoError> {
+    unsafe fn _iter(fd: RawFd) -> Result<DirectoryStream, OsError> {
         let dir_ptr = unsafe { libc::fdopendir(fd) };
         if dir_ptr.is_null() {
-            return Err(IoError::Operation(
-                IoOperationError::Os(OsError::last()),
-            ));
+            return Err(OsError::last());
         }
 
         Ok(DirectoryStream { dir_ptr })
     }
 
-    pub fn iter(&self) -> Result<DirectoryStream, IoError> {
+    pub fn iter(&self) -> Result<DirectoryStream, OsError> {
 
         let fd = syscall!(dup(
             self.as_raw_fd()
-        )).map_err(|e| {
-            IoOperationError::Os(OsError::from(e))
-        })?;
+        )).map_err(OsError::from)?;
         
         let result = unsafe { Self::_iter(fd) };
 
         if let Err(e) = result {
-            syscall!(close(fd)).map_err(|e| {
-                IoOperationError::Os(OsError::from(e))
-            })?;
+            syscall!(close(fd)).map_err(OsError::from)?;
             Err(e)
         } else { result }
     }
@@ -210,19 +193,15 @@ impl Directory {
 }
 
 impl TryFromCompletion for Directory {
-    fn try_from_completion(completion: crate::io::IoCompletion) -> Result<Self, crate::io::IoError> {
+    fn try_from_completion(completion: crate::io::IoCompletion) -> Option<Self> {
         match completion {
             IoCompletion::File(data) => {
-                Ok(unsafe { Directory::new(
-                    &data.path,
+                Some(unsafe { Directory::new(
+                    &PathBuf::from(OsStr::from_bytes(&data.path)),
                     data.fd
                 ) })
             },
-            _ => {
-                Err(IoOperationError::UnexpectedPollResult(
-                    String::from("Directory future got unexpected poll result")
-                ).into())
-            }
+            _ => None
         }
     }
 }
@@ -268,7 +247,7 @@ impl Drop for DirectoryStream {
 }
 
 impl Iterator for DirectoryStream {
-    type Item = IoResult<DirectoryEntry>;
+    type Item = Result<DirectoryEntry, OsError>;
     
     fn next(&mut self) -> Option<Self::Item> {
 
@@ -280,9 +259,7 @@ impl Iterator for DirectoryStream {
             if entry.is_null() {
                 let errno = unsafe { *libc::__errno_location() };
                 if errno != 0 {
-                    return Some(Err(IoError::Operation(
-                        IoOperationError::Os(OsError::from(errno)),
-                    )));
+                    return Some(Err(OsError::from(errno)));
                 }
                 return None;
             }

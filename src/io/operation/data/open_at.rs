@@ -1,7 +1,8 @@
-use std::{ffi::CString, fmt, os::{fd::RawFd, unix::ffi::OsStrExt}, path::{Path, PathBuf}};
+use std::{ffi::CString, fmt, os::{fd::RawFd, unix::ffi::OsStrExt}, path::Path};
 use bitflags::bitflags;
+use bytes::Bytes;
 
-use crate::io::IoSubmissionResult;
+use crate::io::IoSubmissionError;
 
 bitflags! {
     #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -319,7 +320,7 @@ impl IoOpenAtData {
     pub fn new(
         path: &Path,
         settings: IoFileOpenSettings
-    ) -> IoSubmissionResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             path: Some(CString::new(path.as_os_str().as_bytes())?),
             settings
@@ -328,15 +329,20 @@ impl IoOpenAtData {
 }
 
 impl super::CompletableOperation for IoOpenAtData {
-    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletionResult {
-        let path_bytes = self.path.take().ok_or(
-            crate::io::IoOperationError::NoData
-        )?.into_bytes();
-        Ok(crate::io::IoCompletion::File(
+    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletion {
+
+        let path = self.path.take().map(|p| {
+            Bytes::from(p.into_bytes())
+        }).unwrap_or({
+            warn!("cl-async: openat(): Expected path but got None; returning empty bytes.");
+            Bytes::new()
+        });
+
+        crate::io::IoCompletion::File(
             crate::io::completion_data::IoFileCompletion { 
                 fd: result_code as RawFd,
-                path: PathBuf::from(String::from_utf8(path_bytes)?),
-            })
+                path
+            }
         )
     }
 }

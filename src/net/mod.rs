@@ -6,17 +6,14 @@ mod tcp_stream;
 mod tcp_server;
 
 pub mod futures;
-
-use std::fmt;
-use std::net::AddrParseError;
 use thiserror::Error;
-use crate::os_error;
 
 pub use tcp_listener::TcpListener;
 pub use tcp_listener::TcpListenerState;
 pub use tcp_listener::WantsBind as TcpListenerStateWantsBind;
 pub use tcp_listener::WantsListen as TcpListenerStateWantsListen;
 pub use tcp_listener::Listening as TcpListenerStateListening;
+pub use tcp_listener::TcpListenError;
 pub use socket_options::SocketOption;
 pub use socket_options::SocketConfigurable;
 pub use address::SocketAddress;
@@ -25,11 +22,22 @@ pub use address::IpVersion;
 pub use address::PeerAddress;
 pub use address::LocalAddress;
 pub use address::Port;
+pub use address::AddressRetrievalError;
+pub use address::IpParseError;
+pub use address::IpV4ParseError;
+pub use address::IpV6CompressError;
+pub use address::IpV6UncompressError;
+pub use address::UnsupportedAddressFamilyError;
+pub use address::V4MappedV6Error;
+pub use address::IpError;
 pub use tcp_stream::TcpStream;
 pub use tcp_stream::IoAcceptFuture;
+pub use tcp_stream::TcpConnectionError;
 pub use tcp_server::TcpServer;
+pub use tcp_server::TcpServerInitError;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Error)]
+#[error("C Socket Extended Error: {errno}, origin: {origin}, type: {type_}, code: {code}, pad: {pad}, info: {info}, data: {data}")]
 pub struct CSockExtendedError {
     pub errno: u32,
     pub origin: u8,
@@ -38,16 +46,6 @@ pub struct CSockExtendedError {
     pub pad: u8,
     pub info: u32,
     pub data: u32,
-}
-
-impl fmt::Display for CSockExtendedError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "CSockExtendedError {{ errno: {}, origin: {}, type_: {}, code: {}, pad: {}, info: {}, data: {} }}",
-            self.errno, self.origin, self.type_, self.code, self.pad, self.info, self.data
-        )
-    }
 }
 
 impl From<libc::sock_extended_err> for CSockExtendedError {
@@ -78,74 +76,17 @@ impl Into<libc::sock_extended_err> for CSockExtendedError {
     }
 }
 
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error)]
 pub enum NetworkError {
-    #[error("Failed to create socket: {0}")]
-    SocketCreateError(os_error::OsError),
+    #[error("IP error: {0}")]
+    IpError(#[from] IpError),
 
-    #[error("Failed to set socket options: {0}")]
-    SocketSetOptionError(os_error::OsError),
+    #[error("TCP Listen error: {0}")]
+    TcpListenError(#[from] TcpListenError),
 
-    #[error("Failed to parse address: {0}")]
-    AddressParseError(AddrParseError),
+    #[error("TCP Server Initialization error: {0}")]
+    TcpServerInitError(#[from] TcpServerInitError),
 
-    #[error("Unsupported address family: {0}")]
-    UnsupportedAddressFamily(libc::sa_family_t),
-
-    #[error("Invalid byte data for address")]
-    InvalidAddressByteData,
-
-    #[error("Invalid address: {0}")]
-    InvalidAddress(String),
-
-    #[error("Invalid control message size: {0}")]
-    InvalidControlMessageSize(usize),
-
-    #[error("Invalid control message data size, {0} is not a multiple of {1}")]
-    InvalidControlMessageDataSize(usize, usize),
-
-    #[error("Failed to bind socket: {0}")]
-    SocketBindError(os_error::OsError),
-
-    #[error("Invalid control message type for level {0} and type {1}")]
-    InvalidControlMessageTypeForLevel(i32, i32),
-
-    #[error("Invalid control message level: {0}")]
-    InvalidControlMessageLevel(i32),
-
-    #[error("Failed to listen on socket: {0}")]
-    SocketListenError(os_error::OsError),
-
-    #[error("Failed to accept connection: {0}")]
-    SocketAcceptError(os_error::OsError),
-
-    #[error("Failed to read from socket: {0}")]
-    SocketReadError(os_error::OsError),
-
-    #[error("Failed to write to socket: {0}")]
-    SocketWriteError(os_error::OsError),
-
-    #[error("Failed to shutdown socket: {0}")]
-    SocketShutdownError(os_error::OsError),
-
-    #[error("Failed to get socket name: {0}")]
-    SocketGetNameError(os_error::OsError),
-
-    #[error("Socket failed to connect to host: {addr}, {message}")]
-    SocketConnectError {
-        addr: SocketAddress,
-        message: String,
-    },
-
-    #[error("Failed to start listener task: {0}")]
-    ListenerTaskError(String),
-
-    #[error("Extended socket error: {0}")]
-    ExtendedSocketError(CSockExtendedError),
-
-    #[error("Null pointer")]
-    NullPointerError,
-
-    #[error("Invalid argument: {0}")]
-    InvalidArgument(String),
+    #[error("TCP Connection error: {0}")]
+    TcpConnectionError(#[from] TcpConnectionError),
 }

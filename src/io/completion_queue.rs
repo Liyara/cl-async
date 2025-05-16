@@ -5,13 +5,12 @@ use std::{
 
 use dashmap::DashMap;
 
-use crate::{Key, OsError};
+use crate::Key;
 
 use super::{
     IoCompletionResult, 
     IoCompletionState, 
-    IoEntry,
-    IoOperationError
+    IoEntry
 };
 
 struct IoCompletionSlot {
@@ -89,7 +88,7 @@ impl IoCompletionQueue {
 
         let mut entry = match guard {
             Some(entry) => entry,
-            None => return Poll::Ready(Some(Err(IoOperationError::Os(OsError::NotFound))))
+            None => return Poll::Ready(None)
         };
 
         let slot = entry.value_mut();

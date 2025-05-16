@@ -1,20 +1,24 @@
+use crossbeam_channel::SendError;
 use thiserror::Error;
-use crate::events::channel::{
-    EventChannelError, 
-    EventChannelSender
-};
+use crate::events::channel::EventChannelSender;
 use super::Message;
 
 #[derive(Debug, Error)]
-pub enum WorkSenderError {
-    #[error("Failed to send message: {0}")]
-    SendError(#[from] crossbeam_channel::SendError<Message>),
+#[error("Failed to send message to worker channel: {source}")]
+pub struct SendToWorkerChannelError {
 
-    #[error("Failed to signal message: {0}")]
-    SignalError(#[from] EventChannelError),
+    #[from]
+    source: SendError<Message>
+}
 
-    #[error("Woken task queue is full")]
-    WokenTaskQueueFull,
+impl SendToWorkerChannelError {
+    pub fn into_message(self) -> Message {
+        self.source.into_inner()
+    }
+
+    pub fn as_message(&self) -> &Message {
+        &self.source.0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,9 +32,20 @@ impl WorkSender {
         Self { sender, message_signaler }
     }
 
-    pub fn send_message(&self, msg: Message) -> Result<(), WorkSenderError> {
+    pub fn send_message(&self, msg: Message) -> Result<(), SendToWorkerChannelError> {
         self.sender.send(msg)?;
-        self.message_signaler.signal()?;
+        if let Err(_) = self.message_signaler.signal() {
+            // Might be benign, just retry first
+            if let Err(e) = self.message_signaler.signal() {
+                // Something is likely wrong with the signaler.
+                warn!("cl-async: Failed to signal message worker message: {e}");
+                if let Err(e) = self.sender.send(
+                    Message::RepairMessageChannel
+                ) {
+                    error!("cl-async: Failed to send channel repair message: {e}");
+                }
+            }
+        }
         Ok(())
     }
 }

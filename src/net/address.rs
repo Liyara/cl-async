@@ -1,6 +1,68 @@
 use std::{fmt, os::fd::RawFd};
 
-use super::NetworkError;
+use thiserror::Error;
+
+use crate::OsError;
+
+#[derive(Debug, Error)]
+pub enum IpV4ParseError {
+    #[error("Invalid V4 Format: {0}")]
+    InvalidV4Format(String),
+
+    #[error("Invalid V4 Value: {0}")]
+    InvalidV4Value(String),
+}
+
+#[derive(Debug, Error)]
+pub enum IpV6CompressError {
+    #[error("Invalid Uncompressed V6 Format: {0}")]
+    InvalidUncompressedV6Format(String),
+
+    #[error("Invalid Uncompressed V6 Value: {0}")]
+    InvalidUncompressedV6Value(String),
+}
+
+#[derive(Debug, Error)]
+pub enum IpV6UncompressError {
+    #[error("Invalid Compressed V6 Format: {0}")]
+    InvalidCompressedV6Format(String),
+
+    #[error("Invalid Compressed V6 Value: {0}")]
+    InvalidCompressedV6Value(String),
+}
+
+#[derive(Debug, Error)]
+pub enum V4MappedV6Error {
+    #[error("Invalid V4 Mapped V6 Format: {0}")]
+    InvalidMappedV6Format(String),
+
+    #[error("Failed to parse V4 Mapped V6 Value: {0}")]
+    V4ParseError(#[from] IpV4ParseError),
+}
+
+#[derive(Debug, Error)]
+pub enum IpParseError {
+    #[error("Unknown address format: {0}")]
+    UnknownFormat(String),
+
+    #[error("IP V4 Parse Error: {0}")]
+    IpV4ParseError(#[from] IpV4ParseError),
+
+    #[error("IP V6 Uncompress Error: {0}")]
+    IpV6UncompressError(#[from] IpV6UncompressError),
+
+    #[error("V4 Mapped V6 Error: {0}")]
+    V4MappedV6Error(#[from] V4MappedV6Error),
+}
+
+#[derive(Debug, Error)]
+pub enum IpError {
+    #[error("IP Parse Error: {0}")]
+    IpParseError(#[from] IpParseError),
+
+    #[error("IP V6 Compress Error: {0}")]
+    IpV6CompressError(#[from] IpV6CompressError),
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum IpVersion {
@@ -17,14 +79,34 @@ pub enum IpAddress {
 
 impl IpAddress {
 
-    pub fn v4(addr: &str) -> Result<Self, NetworkError> {
+    // Create an IP address from an IPv4 string
+    pub fn v4(addr: &str) -> Result<Self, IpV4ParseError> {
         Self::v4_from_str(addr) 
     }
 
-    pub fn v6(addr: &str) -> Result<Self, NetworkError> {
-        let uncompressed = Self::uncompress_v6(addr)?;
+    // Create an IP address from an IPv6 string; both compressed and uncompressed formats are accepted
+    pub fn v6(addr: &str) -> Result<Self, IpParseError> {
+
+        if Self::is_mapped_v6(addr) {
+            return Ok(Self::parse_mapped_v6(addr)?);
+        }
+
+        let uncompressed = if Self::is_compressed_v6(addr) {
+            Self::uncompress_v6(addr)?
+        } else { addr.to_string() };
+
         let bytes = Self::uncompressed_v6_as_bytes(&uncompressed)?;
+
         Ok(IpAddress::V6(bytes))
+    }
+
+    pub fn is_v4_mapped_v6(&self) -> bool {
+        match self {
+            IpAddress::V4(_) => false,
+            IpAddress::V6 (addr) => {
+                addr[0..10] == [0u8; 10] && addr[10..12] == [0xffu8; 2]
+            }
+        }
     }
 
     pub fn any_v4() -> Self { IpAddress::V4([0u8; 4]) }
@@ -76,27 +158,33 @@ impl IpAddress {
         }
     }
 
-    fn v4_from_str(addr: &str) -> Result<Self, NetworkError> {
+    fn v4_bytes_from_str(addr: &str) -> Result<[u8; 4], IpV4ParseError> {
         let parts: Vec<&str> = str::split(addr, '.').collect();
 
         if parts.len() != 4 {
-            return Err(NetworkError::InvalidAddress(addr.to_string()));
+            return Err(IpV4ParseError::InvalidV4Format(addr.to_string()));
         }
 
         let mut bytes = [0u8; 4];
 
         for i in 0..4 {
             let part = parts[i].parse::<u8>().map_err(|_| {
-                NetworkError::InvalidAddress(addr.to_string())
+                IpV4ParseError::InvalidV4Value(addr.to_string())
             })?;
 
             bytes[i] = part;
         }
 
+        Ok(bytes)
+    }
+
+    fn v4_from_str(addr: &str) -> Result<Self, IpV4ParseError> {
+        
+        let bytes = Self::v4_bytes_from_str(addr)?;
         Ok(IpAddress::V4(bytes))
     }
 
-    fn compress_v6(addr: &str) -> Result<String, NetworkError> {
+    fn compress_v6(addr: &str) -> Result<String, IpV6CompressError> {
 
         let mut parts: Vec<String> = str::split(
             addr, 
@@ -105,13 +193,13 @@ impl IpAddress {
         .collect();
 
         if parts.len() != 8 {
-            return Err(NetworkError::InvalidArgument(addr.to_string()));
+            return Err(IpV6CompressError::InvalidUncompressedV6Format(addr.to_string()));
         }
 
         for part in parts.iter_mut() {
 
             if part.len() == 0 || part.len() > 4 {
-                return Err(NetworkError::InvalidArgument(addr.to_string()));
+                return Err(IpV6CompressError::InvalidUncompressedV6Value(addr.to_string()));
             }
 
             while part.len() > 1 && part.starts_with("0") {
@@ -137,7 +225,7 @@ impl IpAddress {
                     zero_count = 0;
                 }
             } else {
-                return Err(NetworkError::InvalidArgument(addr.to_string()));
+                return Err(IpV6CompressError::InvalidUncompressedV6Value(addr.to_string()));
             }
             i += 1;
         }
@@ -167,7 +255,58 @@ impl IpAddress {
         
     }
 
-    fn uncompress_v6(addr: &str) -> Result<String, NetworkError> {
+    /*
+        Does not indicate if the adress is a VALID compressed IPv6 address
+        Just checks if its formatted in such a way that the intent of the caller
+        is for the string to be interpreted as a compressed IPv6 address
+    */
+    fn is_compressed_v6(addr: &str) -> bool {
+        addr.contains("::") && addr.matches(':').count() <= 7
+    }
+
+    /*
+        Does not indicate if the adress is a VALID mapped IPv6 address
+        Just checks if its formatted in such a way that the intent of the caller
+        is for the string to be interpreted as a mapped IPv6 address
+    */
+    fn is_mapped_v6(addr: &str) -> bool {
+        addr.starts_with("::ffff:") && addr.contains('.')
+    }
+
+    /*
+        Does not indicate if the adress is a VALID uncompressed IPv6 address
+        Just checks if its formatted in such a way that the intent of the caller
+        is for the string to be interpreted as an uncompressed IPv6 address
+    */
+    fn is_uncompressed_v6(addr: &str) -> bool {
+        addr.matches(':').count() == 7 && !addr.contains("::")
+    }
+
+    fn is_v6(addr: &str) -> bool {
+        Self::is_compressed_v6(addr) || Self::is_uncompressed_v6(addr)
+    }
+
+    fn is_v4(addr: &str) -> bool {
+        addr.matches('.').count() == 3 && !addr.contains(':')
+    }
+
+    fn parse_mapped_v6(addr: &str) -> Result<Self, V4MappedV6Error> {
+
+        let v4_str = addr.split_once("::ffff:").ok_or(
+            V4MappedV6Error::InvalidMappedV6Format(addr.to_string())
+        )?.1;
+
+        let v4_bytes = Self::v4_bytes_from_str(v4_str)?;
+
+        let mut bytes = [0u8; 16];
+        bytes[10] = 0xff;
+        bytes[11] = 0xff;
+        bytes[12..].copy_from_slice(&v4_bytes);
+
+        Ok(IpAddress::V6(bytes))
+    }
+
+    fn uncompress_v6(addr: &str) -> Result<String, IpV6UncompressError> {
         let mut parts: Vec<String> = str::split(
             addr, 
             ':'
@@ -175,7 +314,7 @@ impl IpAddress {
         .collect();
 
         if parts.len() > 9 || parts.len() < 3 {
-            return Err(NetworkError::InvalidArgument(addr.to_string()));
+            return Err(IpV6UncompressError::InvalidCompressedV6Format(addr.to_string()));
         }
 
         if parts[0].is_empty() { parts.remove(0);}
@@ -193,7 +332,7 @@ impl IpAddress {
             let part = &mut parts[i];
 
             if part.len() > 4 {
-                return Err(NetworkError::InvalidArgument(addr.to_string()));
+                return Err(IpV6UncompressError::InvalidCompressedV6Value(addr.to_string()));
             }
 
             if part.is_empty() {
@@ -201,7 +340,7 @@ impl IpAddress {
                     double_colon_index = i as isize;
                     continue;
                 } else {
-                    return Err(NetworkError::InvalidArgument(addr.to_string()));
+                    return Err(IpV6UncompressError::InvalidCompressedV6Value(addr.to_string()));
                 }
             }
 
@@ -212,7 +351,7 @@ impl IpAddress {
 
         if double_colon_index == -1 {
             if parts.len() != 8 {
-                return Err(NetworkError::InvalidArgument(addr.to_string()))
+                return Err(IpV6UncompressError::InvalidCompressedV6Format(addr.to_string()));
             } else {
                 return Ok(parts.join(":"))
             }
@@ -228,17 +367,17 @@ impl IpAddress {
         Ok(recombined)
     }
 
-    fn uncompressed_v6_as_bytes(addr: &str) -> Result<[u8; 16], NetworkError> {
+    fn uncompressed_v6_as_bytes(addr: &str) -> Result<[u8; 16], IpV6UncompressError> {
         let mut bytes = [0u8; 16];
         let parts: Vec<&str> = str::split(addr, ':').collect();
 
         if parts.len() != 8 {
-            return Err(NetworkError::InvalidAddress(addr.to_string()));
+            return Err(IpV6UncompressError::InvalidCompressedV6Format(addr.to_string()));
         }
 
         for i in 0..8 {
             let part = u16::from_str_radix(parts[i], 16).map_err(|_| {
-                NetworkError::InvalidAddress(addr.to_string())
+                IpV6UncompressError::InvalidCompressedV6Value(addr.to_string())
             })?;
 
             bytes[i * 2] = (part >> 8) as u8;
@@ -261,33 +400,30 @@ impl IpAddress {
 
 }
 
-impl TryFrom<[u8; 4]> for IpAddress {
-    type Error = NetworkError;
-    fn try_from(addr: [u8; 4]) -> Result<Self, Self::Error> {
-        Ok(IpAddress::V4(addr))
+impl From<[u8; 4]> for IpAddress {
+    fn from(addr: [u8; 4]) -> Self {
+        IpAddress::V4(addr)
     }
 }
 
-impl TryFrom<[u8; 16]> for IpAddress {
-    type Error = NetworkError;
-    fn try_from(addr: [u8; 16]) -> Result<Self, Self::Error> {
-        Ok(IpAddress::V6(addr))
+impl From<[u8; 16]> for IpAddress {
+    fn from(addr: [u8; 16]) -> Self {
+        IpAddress::V6(addr)
     }
 }
 
 impl TryFrom<String> for IpAddress {
-    type Error = NetworkError;
+    type Error = IpParseError;
     fn try_from(ip: String) -> Result<Self, Self::Error> {
-        let ip = ip.trim();
-        let has_colon = ip.contains(':');
-        let has_period = ip.contains('.');
-
-        if  (has_colon && has_period) ||
-            (!has_colon && !has_period)
-        { Err(NetworkError::InvalidAddress(ip.to_string())) }
-        else if has_period { Self::v4_from_str(ip) }
-        else { Self::v6(ip) }
-            
+        let ip_formatted = ip.trim();
+        
+        if Self::is_v4(ip_formatted) {
+            Ok(Self::v4(ip_formatted)?)
+        } else if Self::is_v6(ip_formatted) {
+            Self::v6(ip_formatted)
+        } else {
+            Err(IpParseError::UnknownFormat(ip_formatted.to_string()))
+        }   
     }
 }
 
@@ -298,6 +434,11 @@ impl fmt::Display for IpAddress {
                 write!(f, "{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3])
             }
             IpAddress::V6(addr) => {
+                if self.is_v4_mapped_v6() {
+                    let v4_bytes = &addr[12..];
+                    return write!(f, "::ffff:{}.{}.{}.{}", v4_bytes[0], v4_bytes[1], v4_bytes[2], v4_bytes[3]);
+                }
+
                 let uncompressed = Self::bytes_as_uncompressed_v6(addr);
                 let compressed = Self::compress_v6(&uncompressed).unwrap_or_else(|_| uncompressed.clone());
                 write!(f, "{}", compressed)
@@ -374,9 +515,8 @@ impl SocketAddress {
     }
 }
 
-impl TryInto<libc::sockaddr_storage> for SocketAddress {
-    type Error = NetworkError;
-    fn try_into(self) -> Result<libc::sockaddr_storage, NetworkError> {
+impl Into<libc::sockaddr_storage> for SocketAddress {
+    fn into(self) -> libc::sockaddr_storage {
         match self.ip {
             IpAddress::V4(be_bytes) => {
 
@@ -396,7 +536,7 @@ impl TryInto<libc::sockaddr_storage> for SocketAddress {
                     std::ptr::write(storage_ptr, addr_in);
                 }
 
-                Ok(storage)
+                storage
             },
             IpAddress::V6(be_bytes) => {
 
@@ -417,23 +557,25 @@ impl TryInto<libc::sockaddr_storage> for SocketAddress {
                     std::ptr::write(storage_ptr, addr_in6);
                 }
 
-                Ok(storage)
+                storage
             }
         }
     }
 }
 
+#[derive(Debug, Error)]
+#[error("Unsupported address family: {0}")]
+pub struct UnsupportedAddressFamilyError(libc::sa_family_t);
 
 impl TryFrom<libc::sockaddr_storage> for SocketAddress {
-    type Error = NetworkError;
-    fn try_from(addr: libc::sockaddr_storage) -> Result<Self, NetworkError> {
+    type Error = UnsupportedAddressFamilyError;
+    fn try_from(addr: libc::sockaddr_storage) -> Result<Self, UnsupportedAddressFamilyError> {
         let version = addr.ss_family;
 
         if version == libc::AF_INET as libc::sa_family_t {
             let addr_in = unsafe {
                 *(&addr as *const libc::sockaddr_storage as *const libc::sockaddr_in)
             };
-
 
             Ok(Self {
                 ip: IpAddress::V4(u32::from_be(addr_in.sin_addr.s_addr).to_be_bytes()),
@@ -449,7 +591,7 @@ impl TryFrom<libc::sockaddr_storage> for SocketAddress {
                 port: Port::from_be(addr_in6.sin6_port),
             })
         } else {
-            Err(NetworkError::UnsupportedAddressFamily(version))
+            Err(UnsupportedAddressFamilyError(version))
         }
     }
 }
@@ -457,6 +599,32 @@ impl TryFrom<libc::sockaddr_storage> for SocketAddress {
 impl std::fmt::Display for SocketAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}:{}", self.ip, self.port)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum AddressRetrievalError {
+    #[error("Incurred OS error while attempting to retrieve peer address: {0}")]
+    OsError(#[from] OsError),
+
+    #[error("Retrieved address does not belong to a known address family: {0}")]
+    InvalidSocketAddress(#[from] UnsupportedAddressFamilyError),
+}
+
+impl TryFrom<&RawFd> for SocketAddress {
+    type Error = AddressRetrievalError;
+
+    fn try_from(value: &RawFd) -> Result<Self, Self::Error> {
+        let mut addr: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        let mut addr_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+
+        syscall!(getsockname(
+            *value,
+            &mut addr as *mut _ as *mut libc::sockaddr,
+            &mut addr_len as *mut _
+        )).map_err(OsError::from)?;
+
+        Ok(SocketAddress::try_from(addr)?)
     }
 }
 
@@ -482,23 +650,10 @@ impl PeerAddress {
 }
 
 impl TryFrom<&RawFd> for PeerAddress {
-    type Error = NetworkError;
+    type Error = AddressRetrievalError;
 
     fn try_from(value: &RawFd) -> Result<Self, Self::Error> {
-        let mut addr: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-        let mut addr_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-
-        syscall!(getpeername(
-            *value,
-            &mut addr as *mut _ as *mut libc::sockaddr,
-            &mut addr_len as *mut _
-        )).map_err(|e| {
-            NetworkError::SocketGetNameError(e.into())
-        })?;
-
-        let socket_address = SocketAddress::try_from(addr)?;
-
-        Ok(PeerAddress(socket_address))
+        Ok(PeerAddress(SocketAddress::try_from(value)?))
     }
 }
 
@@ -508,16 +663,15 @@ impl From<SocketAddress> for PeerAddress {
     }
 }
 
-impl TryInto<libc::sockaddr_storage> for PeerAddress {
-    type Error = NetworkError;
-    fn try_into(self) -> Result<libc::sockaddr_storage, NetworkError> {
-        self.0.try_into()
+impl Into<libc::sockaddr_storage> for PeerAddress {
+    fn into(self) -> libc::sockaddr_storage {
+        self.0.into()
     }
 }
 
 impl TryFrom<libc::sockaddr_storage> for PeerAddress {
-    type Error = NetworkError;
-    fn try_from(addr: libc::sockaddr_storage) -> Result<Self, NetworkError> {
+    type Error = UnsupportedAddressFamilyError;
+    fn try_from(addr: libc::sockaddr_storage) -> Result<Self, UnsupportedAddressFamilyError> {
         SocketAddress::try_from(addr).map(PeerAddress)
     }
 }
@@ -607,23 +761,10 @@ impl LocalAddress {
 }
 
 impl TryFrom<&RawFd> for LocalAddress {
-    type Error = NetworkError;
+    type Error = AddressRetrievalError;
 
     fn try_from(value: &RawFd) -> Result<Self, Self::Error> {
-        let mut addr: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-        let mut addr_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-
-        syscall!(getsockname(
-            *value,
-            &mut addr as *mut _ as *mut libc::sockaddr,
-            &mut addr_len as *mut _
-        )).map_err(|e| {
-            NetworkError::SocketGetNameError(e.into())
-        })?;
-
-        let socket_address = SocketAddress::try_from(addr)?;
-
-        Ok(LocalAddress(socket_address))
+        Ok(LocalAddress(SocketAddress::try_from(value)?))
     }
 }
 
@@ -633,16 +774,15 @@ impl From<SocketAddress> for LocalAddress {
     }
 }
 
-impl TryInto<libc::sockaddr_storage> for LocalAddress {
-    type Error = NetworkError;
-    fn try_into(self) -> Result<libc::sockaddr_storage, NetworkError> {
-        self.0.try_into()
+impl Into<libc::sockaddr_storage> for LocalAddress {
+    fn into(self) -> libc::sockaddr_storage {
+        self.0.into()
     }
 }
 
 impl TryFrom<libc::sockaddr_storage> for LocalAddress {
-    type Error = NetworkError;
-    fn try_from(addr: libc::sockaddr_storage) -> Result<Self, NetworkError> {
+    type Error = UnsupportedAddressFamilyError;
+    fn try_from(addr: libc::sockaddr_storage) -> Result<Self, Self::Error> {
         SocketAddress::try_from(addr).map(LocalAddress)
     }
 }
@@ -883,7 +1023,7 @@ mod tests {
         let original_sa = SocketAddress::new(ip, port);
 
         // Convert to libc::sockaddr_storage
-        let storage_res: Result<libc::sockaddr_storage, NetworkError> = original_sa.clone().try_into();
+        let storage_res: Result<libc::sockaddr_storage, _> = original_sa.clone().try_into();
         assert!(storage_res.is_ok());
         let storage = storage_res.unwrap();
 
@@ -915,7 +1055,7 @@ mod tests {
         let original_sa = SocketAddress::new(ip, port);
 
         // Convert to libc::sockaddr_storage
-        let storage_res: Result<libc::sockaddr_storage, NetworkError> = original_sa.clone().try_into();
+        let storage_res: Result<libc::sockaddr_storage, _> = original_sa.clone().try_into();
         assert!(storage_res.is_ok());
         let storage = storage_res.unwrap();
 
@@ -957,5 +1097,87 @@ mod tests {
         assert_eq!(pa.ip(), &IpAddress::localhost_v6());
         assert_eq!(pa.port(), Port::https());
         assert_eq!(format!("{}", pa), "::1:443");
+    }
+
+    #[test]
+    fn test_v4_mapped_v6_parsing_and_display() {
+        // This input is a valid IPv4-mapped IPv6 address.
+        let input = "::ffff:192.168.0.1";
+        let ip = IpAddress::v6(input).unwrap();
+
+        // Verify the internal representation: should be an IPv6 variant with bytes:
+        // - Bytes 0-9 are 0,
+        // - Bytes 10-11 are 0xff,
+        // - Bytes 12-15 equal [192, 168, 0, 1].
+        match ip {
+            IpAddress::V6(bytes) => {
+                assert_eq!(
+                    &bytes[0..10],
+                    &[0u8; 10],
+                    "The first 10 bytes should be zeros."
+                );
+                assert_eq!(
+                    &bytes[10..12],
+                    &[0xff, 0xff],
+                    "Bytes 10-11 should equal 0xff 0xff."
+                );
+                assert_eq!(
+                    &bytes[12..16],
+                    &[192, 168, 0, 1],
+                    "The last 4 bytes should match the IPv4 address."
+                );
+            }
+            _ => panic!("Expected an IPv6 variant for a mapped address."),
+        }
+
+        // Verify that the Display impl produces the canonical mapped string.
+        assert_eq!(format!("{}", ip), "::ffff:192.168.0.1");
+    }
+
+    #[test]
+    fn test_invalid_v4_mapped_v6_format() {
+        // A missing IPv4-part should result in an error.
+        let input = "::ffff:";
+        let result = IpAddress::v6(input);
+        assert!(
+            result.is_err(),
+            "A mapped V6 address missing the IPv4 portion must error."
+        );
+    }
+
+    #[test]
+    fn test_invalid_v4_mapped_v6_value() {
+        // Provide an invalid IPv4 component (256 is out-of-range).
+        let input = "::ffff:256.0.0.1";
+        let result = IpAddress::v6(input);
+        assert!(
+            result.is_err(),
+            "An invalid IPv4 value in a mapped V6 address must result in an error."
+        );
+    }
+
+    #[test]
+    fn test_v4_mapped_v6_try_from_string() {
+        let s = "::ffff:10.0.0.1".to_string();
+        let ip = IpAddress::try_from(s).unwrap();
+
+        // Verify that TryFrom<String> parses a mapped IPv6 address properly.
+        match ip {
+            IpAddress::V6(bytes) => {
+                // Ensure that our helper method recognizes the address as mapped.
+                assert!(
+                    ip.is_v4_mapped_v6(),
+                    "The address should be recognized as an IPv4-mapped IPv6 address."
+                );
+                assert_eq!(
+                    &bytes[12..16],
+                    &[10, 0, 0, 1],
+                    "The IPv4 component must be parsed correctly."
+                );
+            }
+            _ => panic!("Expected a mapped IPv6 address, not a V4 variant."),
+        }
+        // Also verify display formatting.
+        assert_eq!(format!("{}", ip), "::ffff:10.0.0.1");
     }
 }

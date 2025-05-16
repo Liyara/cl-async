@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::io::{IoBuffer, IoInputBuffer};
+use crate::io::IoInputBuffer;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,13 +27,21 @@ impl IoSendData {
             flags,
         }
     }
+
+    pub fn buffer(&self) -> &IoInputBuffer {
+        &self.buffer
+    }
+
+    pub fn into_buffer(self) -> IoInputBuffer {
+        self.buffer
+    }
 }
 
 impl super::CompletableOperation for IoSendData {
-    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Write(crate::io::completion_data::IoWriteCompletion {
+    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletion {
+        crate::io::IoCompletion::Write(crate::io::completion_data::IoWriteCompletion {
             bytes_written: result_code as usize
-        }))
+        })
     }
 }
 
@@ -44,8 +52,8 @@ impl super::AsUringEntry for IoSendData {
         unsafe {
             io_uring::opcode::Send::new(
                 io_uring::types::Fd(fd),
-                buffer.as_mut_ptr(),
-                buffer.buffer_limit() as u32,
+                buffer.as_ptr(),
+                buffer.readable_len() as u32,
             ).flags(self.flags.bits())
             .build().user_data(key.as_u64())
         }

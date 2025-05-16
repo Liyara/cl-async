@@ -2,6 +2,8 @@ use std::{ffi::CString, os::unix::ffi::OsStrExt, path::Path};
 
 use bitflags::bitflags;
 
+use crate::io::IoSubmissionError;
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct IoStatxFlags: i32 {
@@ -87,7 +89,7 @@ impl IoStatxData {
         path: &Path, 
         flags: IoStatxFlags, 
         mask: IoStatxMask
-    ) -> crate::io::IoSubmissionResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         let path = CString::new(path.as_os_str().as_bytes())?;
         Ok(Self {
             path,
@@ -99,12 +101,12 @@ impl IoStatxData {
 }
 
 impl super::CompletableOperation for IoStatxData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
+    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletion {
 
-        Ok(crate::io::IoCompletion::Stats(crate::io::completion_data::IoStatxCompletion {
+        crate::io::IoCompletion::Stats(crate::io::completion_data::IoStatxCompletion {
             stats: *self.statx,
             mask: self.mask,
-        }))
+        })
     }
 }
 

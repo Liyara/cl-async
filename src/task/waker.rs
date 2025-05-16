@@ -1,17 +1,8 @@
 use std::sync::Arc;
-use thiserror::Error;
 use crate::worker::{
-    work_sender::WorkSenderError, 
-    Message, 
-    WorkSender
+    work_sender::SendToWorkerChannelError, Message, WorkSender
 };
 use super::TaskId;
-
-#[derive(Debug, Error)]
-pub enum WakerError {
-    #[error("Failed to send message: {0}")]
-    SendError(#[from] WorkSenderError),
-}
 
 pub struct TaskWaker {
     task_id: TaskId,
@@ -27,7 +18,7 @@ impl TaskWaker {
         }))
     } 
 
-    fn wake_task(&self) -> Result<(), WakerError> {
+    fn wake_task(&self) -> Result<(), SendToWorkerChannelError> {
         Ok(self.tx.send_message(Message::WakeTask(self.task_id))?)
     }
 }

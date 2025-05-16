@@ -2,10 +2,11 @@ use std::{os::fd::{AsRawFd, FromRawFd, RawFd}, sync::Arc};
 
 use futures::FutureExt;
 use sysctl::Sysctl;
+use thiserror::Error;
 
-use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, notifications::NotificationFlags, worker::WorkerHandle, Key};
+use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, net::PeerAddress, notifications::NotificationFlags, pool::SpawnTaskErrorKind, worker::{work_sender::SendToWorkerChannelError, WorkerHandle}, Key, OsError};
 
-use super::{IpVersion, LocalAddress, NetworkError, SocketConfigurable, SocketOption, TcpStream};
+use super::{IpVersion, LocalAddress, SocketConfigurable, SocketOption, TcpStream};
 
 pub trait TcpListenerState {}
 
@@ -45,7 +46,7 @@ impl<T: TcpListenerState> TcpListener<T> {
 
 impl TcpListener<()> {
 
-    pub fn new(addr: LocalAddress) -> Result<TcpListener<WantsBind>, NetworkError> {
+    pub fn new(addr: LocalAddress) -> Result<TcpListener<WantsBind>, OsError> {
 
         let domain = match addr.ip().version() {
             IpVersion::V4 => libc::AF_INET,
@@ -56,9 +57,7 @@ impl TcpListener<()> {
             domain,
             libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
             0
-        )).map_err(|e| {
-            NetworkError::SocketCreateError(e.into())
-        })?;
+        )).map_err(OsError::from)?;
 
         Ok(TcpListener::<WantsBind> {
             fd: unsafe { Arc::new(OwnedFdAsync::from_raw_fd(fd)) },
@@ -70,25 +69,38 @@ impl TcpListener<()> {
 }
 
 impl TcpListener<WantsBind> {
-    pub fn bind(self) -> Result<TcpListener<WantsListen>, NetworkError> {
+    pub fn bind(self) -> Result<TcpListener<WantsListen>, OsError> {
 
         let addr_len = match self.addr.ip().version() {
             IpVersion::V4 => std::mem::size_of::<libc::sockaddr_in>(),
             IpVersion::V6 => std::mem::size_of::<libc::sockaddr_in6>(),
         };
 
-        let addr: libc::sockaddr_storage = self.addr.try_into()?;
+        let addr: libc::sockaddr_storage = self.addr.into();
 
         syscall!(bind(
             self.as_raw_fd(),
             &addr as *const _ as *const libc::sockaddr,
             addr_len as u32
-        )).map_err(|e| {
-            NetworkError::SocketBindError(e.into())
-        })?;
+        )).map_err(OsError::from)?;
 
         Ok(Self::transition_state::<WantsListen>(self))
     }
+}
+
+#[derive(Debug, Error)]
+pub enum TcpListenError {
+    #[error("Could not get find a valid worker to listen on")]
+    NoWorkersAvailable,
+
+    #[error("Failed to issue accept_multi to worker: {0}")]
+    WorkerSendError(#[from] SendToWorkerChannelError),
+
+    #[error("Failed to listen on socket: {0}")]
+    SocketListenError(#[from] OsError),
+
+    #[error("Failed to spawn listener task: {0}")]
+    ListenerTaskError(#[from] SpawnTaskErrorKind),
 }
 
 impl TcpListener<WantsListen> {
@@ -96,23 +108,21 @@ impl TcpListener<WantsListen> {
     fn get_worker_data(
         &self,
         id: usize,
-    ) -> Result<(WorkerHandle, Key, crate::notifications::Subscription), NetworkError> {
-        let worker_handle = crate::get_worker_handle(id).map_err(
-            |e| NetworkError::ListenerTaskError(e.to_string())
+    ) -> Result<(WorkerHandle, Key, crate::notifications::Subscription), TcpListenError> {
+        let worker_handle = crate::get_worker_handle(id).ok_or(
+            TcpListenError::NoWorkersAvailable
         )?;
 
         let key = worker_handle.io_submission_queue.submit(
             IoOperation::accept_multi(&self.fd.as_raw_fd()),
             None
         ).map_err(|e| {
-            NetworkError::ListenerTaskError(e.to_string())
+            TcpListenError::WorkerSendError(e)
         })?;
 
         let notification_subscription = worker_handle.notify_on(
             NotificationFlags::SHUTDOWN | NotificationFlags::KILL
-        ).map_err(|e| {
-            NetworkError::ListenerTaskError(e.to_string())
-        })?;
+        );
 
         Ok((worker_handle, key, notification_subscription))
     }
@@ -127,7 +137,7 @@ impl TcpListener<WantsListen> {
         self,
         worker: usize,
         handler: F
-    ) -> Result<TcpListener<Listening>, NetworkError>
+    ) -> Result<TcpListener<Listening>, TcpListenError>
     where
         F: Fn(TcpStream) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -142,9 +152,7 @@ impl TcpListener<WantsListen> {
         syscall!(listen(
             fd.as_raw_fd(),
             backlog
-        )).map_err(|e| {
-            NetworkError::SocketListenError(e.into())
-        })?;
+        )).map_err(OsError::from)?;
 
         let (
             worker_handle, 
@@ -162,10 +170,15 @@ impl TcpListener<WantsListen> {
                     }).fuse() => {
                         let mut stream = match result {
                             Some(Ok(IoCompletion::Accept(completion))) => {
+
+                                let peer_addr = completion.address.map(|addr| {
+                                    PeerAddress::try_from(addr)
+                                }).transpose().unwrap_or(None);
+
                                 TcpStream::new(
                                     completion.fd,
                                     None,
-                                    completion.address
+                                    peer_addr
                                 )
                             },
                             Some(Err(e)) => {
@@ -191,7 +204,7 @@ impl TcpListener<WantsListen> {
             drop(fd);
             
         }).map_err(|e| {
-            NetworkError::ListenerTaskError(e.to_string())
+            TcpListenError::ListenerTaskError(e.kind)
         })?;
 
         Ok(Self::transition_state::<Listening>(self))
@@ -200,7 +213,7 @@ impl TcpListener<WantsListen> {
     pub fn listen<F, Fut>(
         self, 
         handler: F
-    ) -> Result<TcpListener<Listening>, NetworkError> 
+    ) -> Result<TcpListener<Listening>, TcpListenError> 
     where
         F: Fn(TcpStream) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -214,7 +227,7 @@ impl<T: TcpListenerState> AsRawFd for TcpListener<T> {
 }
 
 impl<T: TcpListenerState> SocketConfigurable for TcpListener<T> {
-    fn set_opt(&self, option: SocketOption) -> Result<&Self, NetworkError> {
+    fn set_opt(&self, option: SocketOption) -> Result<&Self, OsError> {
         option.set(self.fd.as_raw_fd())?;
         Ok(self)
     }

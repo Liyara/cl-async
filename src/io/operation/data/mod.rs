@@ -1,6 +1,7 @@
 use std::os::fd::RawFd;
 use enum_dispatch::enum_dispatch;
-use crate::io::IoCompletionResult;
+use crate::io::failure::IoFailure;
+use crate::io::IoCompletion;
 use crate::Key;
 
 mod accept_multi;
@@ -67,7 +68,8 @@ pub use writev::IoWritevData;
 
 #[enum_dispatch]
 pub trait CompletableOperation {
-    fn get_completion(&mut self, result_code: u32) -> IoCompletionResult;
+    fn get_completion(&mut self, _result_code: u32) -> IoCompletion { IoCompletion::Success }
+    fn get_failure(&mut self) -> IoFailure { IoFailure::Generic }
 }
 
 #[enum_dispatch]

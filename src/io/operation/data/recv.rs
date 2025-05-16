@@ -1,5 +1,6 @@
 use bitflags::bitflags;
-use crate::io::{IoBuffer, IoOutputBuffer};
+use bytes::BytesMut;
+use crate::io::{failure::{data::IoReadFailure, IoFailure}, IoOutputBuffer};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,18 +28,48 @@ impl IoRecvData {
     pub fn set_flags(&mut self, flags: IoRecvFlags) {
         self.flags = flags;
     }
+
+    pub fn buffer(&self) -> Option<&IoOutputBuffer> {
+        self.buffer.as_ref()
+    }
+
+    pub fn into_buffer(mut self) -> Option<IoOutputBuffer> {
+        self.buffer.take()
+    }
 }
 
 impl super::CompletableOperation for IoRecvData {
-    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletionResult {
-        let buffer = self.buffer.take().ok_or(
-            crate::io::IoOperationError::NoData
-        )?;
-        let len = result_code as usize;
-        let data = buffer.into_bytes(len)?;
-        Ok(crate::io::IoCompletion::Read(crate::io::completion_data::IoReadCompletion {
-            data,
-        }))
+    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletion {
+        let bytes_read = result_code as usize;
+
+        let buffer = self.buffer.take().map(|b| {
+            match b.into_bytes(bytes_read) {
+                Ok(buffer) => buffer,
+                Err(e) => {
+                    warn!("cl-async: recv(): Issue while advancing buffer: {e}");
+                    e.into_buffer()
+                }
+            }
+        }).unwrap_or({
+            warn!("cl-async: recv(): Expected buffer but got None; returning empty buffer");
+            BytesMut::new()
+        });
+
+        crate::io::IoCompletion::Read(crate::io::completion_data::IoReadCompletion {
+            buffer,
+            bytes_read,
+        })
+    }
+
+    fn get_failure(&mut self) -> crate::io::failure::IoFailure {
+        IoFailure::Read(IoReadFailure {
+            buffer: self.buffer.take().map(|b| {
+                b.into_bytes_unchecked()
+            }).unwrap_or({
+                warn!("cl-async: recv(): Expected buffer but got None; returning empty buffer");
+                BytesMut::new()
+            }),
+        })
     }
 }
 

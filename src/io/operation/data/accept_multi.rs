@@ -1,17 +1,15 @@
 use std::os::fd::RawFd;
-use crate::Key;
+use crate::{io::IoCompletion, Key};
 
 pub struct IoAcceptMultiData;
 
 impl super::CompletableOperation for IoAcceptMultiData {
-    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletionResult {
-        Ok(
-            crate::io::IoCompletion::Accept(
-                crate::io::completion_data::IoAcceptCompletion {
-                    fd: result_code as RawFd,
-                    address: None
-                }
-            )
+    fn get_completion(&mut self, result_code: u32) -> IoCompletion {
+        crate::io::IoCompletion::Accept(
+            crate::io::completion_data::IoAcceptCompletion {
+                fd: result_code as RawFd,
+                address: None
+            }
         )
     }
 }

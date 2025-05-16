@@ -2,11 +2,7 @@ use std::os::fd::RawFd;
 
 pub struct IoFSyncData;
 
-impl super::CompletableOperation for IoFSyncData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Success)
-    }
-}
+impl super::CompletableOperation for IoFSyncData {}
 
 impl super::AsUringEntry for IoFSyncData {
     fn as_uring_entry(&mut self, fd: RawFd, key: crate::Key) -> io_uring::squeue::Entry {

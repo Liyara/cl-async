@@ -1,8 +1,7 @@
 use std::os::fd::RawFd;
 use bitflags::bitflags;
-use parking_lot::Mutex;
 
-use crate::{io::{IoDoubleOutputBuffer, IoError, IoOperationError, PreparedIoMessage}, Key};
+use crate::{io::{buffers::IoVecOutputBuffer, message::{IoRecvMessage, PendingIoMessage}, IoOutputBuffer, IoSubmissionError}, Key};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,43 +23,144 @@ bitflags! {
         const ERR_QUEUE = libc::MSG_ERRQUEUE;
     }
 }
+
 pub struct IoRecvMsgData {
     pub flags: IoRecvMsgInputFlags,
-    prepared_msg: Mutex<Option<PreparedIoMessage<IoDoubleOutputBuffer>>>,
+    pending_msg: Option<PendingIoMessage>,
 }
 
 impl IoRecvMsgData {
     pub fn new(
-        buffers: Option<IoDoubleOutputBuffer>,
-        control: Option<Vec<u8>>,
+        buffers: Option<IoVecOutputBuffer>,
+        control: Option<IoOutputBuffer>,
         flags: IoRecvMsgInputFlags,
-    ) -> Result<Self, IoError> {
+    ) -> Result<Self, IoSubmissionError> {
 
         Ok(
             Self {
                 flags,
-                prepared_msg: Mutex::new(Some(PreparedIoMessage::new(
+                pending_msg: Some(PendingIoMessage::new(
                     buffers,
                     control,
-                    PreparedIoMessageAddressDirection::Output,
-                ).map_err(|e| {
-                    IoOperationError::from(e)
-                })?))
+                )?),
             }
         )
     }
 }
 
 impl super::CompletableOperation for IoRecvMsgData {
-    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletionResult {
+    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletion {
 
-        if let Some(prepared_msg) = self.prepared_msg.lock().take() {
-            Ok(crate::io::IoCompletion::Msg(crate::io::completion::data::IoMsgCompletion {
-                msg: prepared_msg.into_message(result_code as usize)?,
-            }))
-        } else {
-            Err(crate::io::IoOperationError::NoData)
+        if self.pending_msg.is_none() {
+            warn!("cl-async: recvmsg(): Expected pending message but got None; returning empty message");
+            return crate::io::IoCompletion::Msg(
+                crate::io::completion_data::IoMsgCompletion {
+                    msg: IoRecvMessage::new(
+                        None,
+                        None,
+                        None,
+                        None,
+                        IoRecvMsgOutputFlags::empty(),
+                        0,
+                        0,
+                    ),
+                }
+            );
         }
+
+        // Safe because we just checked is_none()
+        let pending_msg = self
+            .pending_msg
+            .take()
+            .unwrap()
+            .complete(result_code as usize)
+        ;
+
+        let flags = pending_msg.parse_flags();
+
+        let address = match pending_msg.parse_address() {
+            Ok(address) => address,
+            Err(e) => {
+                warn!("cl-async: recvmsg(): {}", e);
+                None
+            }
+        };
+
+        let parsed_control = match pending_msg.parse_control() {
+            Ok(control) => control,
+            Err(e) => {
+                warn!("cl-async: recvmsg(): {}", e);
+                None
+            }
+        };
+
+        let mut pending_msg = pending_msg.next();
+
+        let buffers = match pending_msg.extract_data_buffers() {
+            Ok(buffers) => buffers,
+            Err(e) => {
+                warn!("cl-async: recvmsg(): {}", e);
+                Some(e.into_buffers())
+            }
+        };
+
+        let control = match pending_msg.extract_control_buffer() {
+            Ok(control) => control,
+            Err(e) => {
+                warn!("cl-async: recvmsg(): {}", e);
+                Some(e.into_buffer())
+            }
+        };
+
+        let msg = IoRecvMessage::new(
+            buffers,
+            control,
+            parsed_control,
+            address,
+            flags,
+            pending_msg.bytes_received(),
+            pending_msg.control_bytes_received(),
+        );
+
+        crate::io::IoCompletion::Msg(
+            crate::io::completion_data::IoMsgCompletion { msg }
+        )
+    }
+
+    fn get_failure(&mut self) -> crate::io::failure::IoFailure {
+
+        let pending_msg = self.pending_msg.take();
+
+        if pending_msg.is_none() {
+            return crate::io::failure::IoFailure::Msg(
+                crate::io::failure::data::IoMsgFailure {
+                    data_buffers: None,
+                    control_buffer: None,
+                }
+            );
+        }
+
+        let pending_msg = pending_msg.unwrap();
+
+        let (
+            data_buffers, 
+            control_buffer
+        ) = unsafe { pending_msg.split() };
+
+        let data_buffers = data_buffers.map(|buffers| {
+            buffers.into_vec()
+        });
+
+        let control_buffer = control_buffer.map(|buffer| {
+            buffer.into_bytes_unchecked()
+        });
+
+        crate::io::failure::IoFailure::Msg(
+            crate::io::failure::data::IoMsgFailure {
+                data_buffers,
+                control_buffer,
+            }
+        ) 
     }
 }
 
@@ -68,13 +168,11 @@ impl super::AsUringEntry for IoRecvMsgData {
     
     fn as_uring_entry(&mut self, fd: RawFd, key: Key) -> io_uring::squeue::Entry {
 
-        let mut binding = self.prepared_msg.lock();
-        let prepared_msg = binding.as_mut().unwrap();
-        let msghdr = prepared_msg.as_mut();
+        let pending_msg = self.pending_msg.as_mut().unwrap();
 
         io_uring::opcode::RecvMsg::new(
             io_uring::types::Fd(fd),
-            msghdr as *mut _
+            pending_msg.as_mut_ptr() as *mut _
         ).flags(self.flags.bits() as u32)
         .build().user_data(key.as_u64())
     }

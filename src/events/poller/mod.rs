@@ -69,8 +69,8 @@ impl EventPoller {
         self.event_registry.clone()
     }
 
-    pub fn poll_events(&mut self, events_out: &mut Vec<Event>, timeout_ms: Option<i32>) -> Result<(), EventPollerError> {
-        let timeout: i32 = timeout_ms.unwrap_or(-1);
+    pub fn poll_events(&mut self, events_out: &mut Vec<Event>, timeout_ms: Option<u32>) -> Result<(), EventPollerError> {
+        let timeout: i32 = timeout_ms.map(|t| t as i32).unwrap_or(-1);
 
         events_out.clear();
         self.buffer.clear();

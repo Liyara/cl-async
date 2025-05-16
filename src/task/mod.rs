@@ -19,6 +19,14 @@ pub struct Task {
     pub id: TaskId,
 }
 
+impl std::fmt::Debug for Task {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Task")
+            .field("id", &self.id)
+            .finish()
+    }
+}
+
 impl Task {
     pub fn new(future: impl Future<Output = ()> + Send + 'static) -> Self {
         Self {

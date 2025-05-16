@@ -4,15 +4,31 @@ use std::os::fd::{
     RawFd
 };
 
-use crate::io::{
+use thiserror::Error;
+
+use crate::{io::{
     operation::future::{
         IoOperationFuture, IoVoidFuture, __async_impl_copyable__, __async_impl_receiver__, __async_impl_sender__, __async_impl_types__
-    }, IoError, IoOperation, IoResult, OwnedFdAsync
-};
+    }, IoError, IoOperation, OwnedFdAsync
+}, OsError};
 
 use super::{
-    LocalAddress, NetworkError, PeerAddress, SocketConfigurable, SocketOption
+    AddressRetrievalError, LocalAddress, PeerAddress, SocketConfigurable, SocketOption
 };
+
+#[derive(Debug, Error)]
+pub enum TcpConnectionError {
+    #[error("Failed to create client socket: {0}")]
+    SocketCreateError(#[from] OsError),
+
+    #[error("Failed to connect to peer: {addr}")]
+    ConnectionFailureError {
+        addr: PeerAddress,
+
+        #[source]
+        source: IoError
+    }
+}
 
 pub struct TcpStream {
     fd: OwnedFdAsync,
@@ -46,23 +62,21 @@ impl TcpStream {
         Ok(())
     }
 
-    pub async fn new_client(peer_addr: PeerAddress) -> Result<Self, NetworkError> {
+    pub async fn new_client(peer_addr: PeerAddress) -> Result<Self, TcpConnectionError> {
 
         let fd = syscall!(socket(
             libc::AF_INET,
             libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
             0
-        )).map_err(|e| {
-            NetworkError::SocketCreateError(e.into())
-        })?;
+        )).map_err(OsError::from)?;
 
         let fd = unsafe { OwnedFdAsync::from_raw_fd(fd) };
 
         Self::connect_client(&fd, &peer_addr).await.map_err(
             |e| {
-                NetworkError::SocketConnectError {
-                    addr: peer_addr.clone().into_socket_address(),
-                    message: e.to_string()
+                TcpConnectionError::ConnectionFailureError {
+                    addr: peer_addr,
+                    source: e
                 }
             }
         )?;
@@ -74,7 +88,7 @@ impl TcpStream {
         })
     }
 
-    pub fn query_local_address(&self) -> Result<LocalAddress, NetworkError> {
+    pub fn query_local_address(&self) -> Result<LocalAddress, AddressRetrievalError> {
         
         Ok(
             match self.local_addr {
@@ -84,7 +98,7 @@ impl TcpStream {
         )
     }
 
-    pub fn query_peer_address(&self) -> Result<PeerAddress, NetworkError> {
+    pub fn query_peer_address(&self) -> Result<PeerAddress, AddressRetrievalError> {
         
         Ok(
             match self.peer_addr {
@@ -94,7 +108,7 @@ impl TcpStream {
         )
     }
 
-    pub fn address_local(&mut self) -> Result<&LocalAddress, NetworkError> {
+    pub fn address_local(&mut self) -> Result<&LocalAddress, AddressRetrievalError> {
         
         if self.local_addr.is_none() {
             self.local_addr = Some(LocalAddress::try_from(&self.as_raw_fd())?);
@@ -103,7 +117,7 @@ impl TcpStream {
         Ok(self.local_addr.as_ref().unwrap())
     }
 
-    pub fn address_peer(&mut self) -> Result<&PeerAddress, NetworkError> {
+    pub fn address_peer(&mut self) -> Result<&PeerAddress, AddressRetrievalError> {
         
         if self.peer_addr.is_none() {
             self.peer_addr = Some(PeerAddress::try_from(&self.as_raw_fd())?);
@@ -112,19 +126,19 @@ impl TcpStream {
         Ok(self.peer_addr.as_ref().unwrap())
     }
 
-    pub async fn shutdown(&self) -> IoResult<()> {
+    pub async fn shutdown(&self) -> std::result::Result<(), IoError> {
         IoVoidFuture::new(
             IoOperation::shutdown(self)
         ).await
     }
 
-    pub async fn shutdown_read(&self) -> IoResult<()> {
+    pub async fn shutdown_read(&self) -> std::result::Result<(), IoError> {
         IoVoidFuture::new(
             IoOperation::shutdown_read(self)
         ).await
     }
 
-    pub async fn shutdown_write(&self) -> IoResult<()> {
+    pub async fn shutdown_write(&self) -> std::result::Result<(), IoError> {
         IoVoidFuture::new(
             IoOperation::shutdown_write(self)
         ).await
@@ -133,7 +147,7 @@ impl TcpStream {
 }
 
 impl SocketConfigurable for TcpStream {
-    fn set_opt(&self, option: SocketOption) -> Result<&Self, NetworkError> where Self: Sized {
+    fn set_opt(&self, option: SocketOption) -> Result<&Self, OsError> where Self: Sized {
         option.set(self.as_raw_fd())?;
         Ok(self)
     }

@@ -9,7 +9,6 @@ use crate::io::{
         IoFileSystemMode
     }, 
     IoCompletion, 
-    IoOperationError
 };
 
 pub type IoStatsFuture = IoOperationFuture<crate::io::fs::Stats>;
@@ -75,19 +74,15 @@ impl Default for Stats {
 }
 
 impl TryFromCompletion for Stats {
-    fn try_from_completion(completion: crate::io::IoCompletion) -> Result<Self, crate::io::IoError> {
+    fn try_from_completion(completion: crate::io::IoCompletion) -> Option<Self> {
         match completion {
             IoCompletion::Stats(data) => {
-                Ok(Stats::new(
+                Some(Stats::new(
                     data.stats,
                     &data.mask
                 ))
             },
-            _ => {
-                Err(IoOperationError::UnexpectedPollResult(
-                    String::from("File future got unexpected poll result")
-                ).into())
-            }
+            _ => None
         }
     }
 }

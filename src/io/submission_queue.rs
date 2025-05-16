@@ -1,13 +1,12 @@
 use crate::{
     key::KeyGenerator, 
     worker::{
-        Message, 
-        WorkSender
+        work_sender::SendToWorkerChannelError, Message, WorkSender
     }, 
     Key
 };
 
-use super::{IoOperation, IoSubmission, IoSubmissionError, IoSubmissionResult};
+use super::{IoOperation, IoSubmission};
 
 #[derive(Clone)]
 pub struct IoSubmissionQueue {
@@ -28,7 +27,7 @@ impl IoSubmissionQueue {
         &self, 
         op: IoOperation,
         waker: Option<std::task::Waker>
-    ) -> IoSubmissionResult<Key> {
+    ) -> Result<Key, SendToWorkerChannelError> {
         let key = self.generator.get();
         
         let submission = IoSubmission {
@@ -40,42 +39,10 @@ impl IoSubmissionQueue {
             },
         };
 
-        self.sender.send_message(Message::SubmitIO(submission)).map_err(
-            |e| {
-                IoSubmissionError::FailedToSendOperation(e)
-            }
-        )?;
+        let message = Message::SubmitIO(submission);
+
+        self.sender.send_message(message)?;
 
         Ok(key)
-    }
-
-    pub fn submit_multiple(
-        &self, 
-        op: Vec<IoOperation>, 
-        waker: Option<std::task::Waker>
-    ) -> IoSubmissionResult<Vec<Key>> {
-        let mut keys = Vec::with_capacity(op.len());
-        let mut entries = Vec::with_capacity(op.len());
-        
-        for op in op {
-            let key = self.generator.get();
-            entries.push(IoSubmission {
-                op,
-                key,
-                waker: match waker {
-                    Some(ref w) => Some(w.clone()),
-                    None => None,
-                },
-            });
-            keys.push(key);
-        }
-        
-        self.sender.send_message(Message::SubmitIOMulti(entries)).map_err(
-            |e| {
-                IoSubmissionError::FailedToSendOperation(e)
-            }
-        )?;
-
-        Ok(keys)
     }
 }

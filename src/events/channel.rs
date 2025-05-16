@@ -2,7 +2,6 @@ use std::{
     os::fd::{
         AsRawFd, 
         FromRawFd, 
-        OwnedFd, 
         RawFd
     }, 
     sync::Arc
@@ -10,6 +9,8 @@ use std::{
 
 use thiserror::Error;
 use bitflags::bitflags;
+
+use crate::AtomicOwnedFd;
 
 #[derive(Error, Debug)]
 pub enum EventChannelError {
@@ -44,7 +45,7 @@ impl Default for EventChannelFlags {
 
 #[derive(Debug)]
 pub struct EventChannel {
-    fd: Arc<OwnedFd>,
+    fd: Arc<AtomicOwnedFd>,
 }
 
 impl EventChannel {
@@ -62,7 +63,7 @@ impl EventChannel {
         )?;
         Ok(Self {
             fd: Arc::new(
-                unsafe { OwnedFd::from_raw_fd(fd) }
+                unsafe { AtomicOwnedFd::from_raw_fd(fd) }
             ),
         })
     }
@@ -74,6 +75,7 @@ impl EventChannel {
     pub fn as_receiver(&self) -> EventChannelReceiver {
         EventChannelReceiver::new(Arc::clone(&self.fd))
     }
+
 }
 
 impl AsRawFd for EventChannel {
@@ -82,13 +84,19 @@ impl AsRawFd for EventChannel {
     }
 }
 
+impl AsRef<AtomicOwnedFd> for EventChannel {
+    fn as_ref(&self) -> &AtomicOwnedFd {
+        &self.fd
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EventChannelSender {
-    fd: Arc<OwnedFd>,
+    fd: Arc<AtomicOwnedFd>,
 }
 
 impl EventChannelSender {
-    fn new(fd: Arc<OwnedFd>) -> Self {
+    fn new(fd: Arc<AtomicOwnedFd>) -> Self {
         Self { fd }
     }
 
@@ -119,13 +127,19 @@ impl AsRawFd for EventChannelSender {
     }
 }
 
+impl AsRef<AtomicOwnedFd> for EventChannelSender {
+    fn as_ref(&self) -> &AtomicOwnedFd {
+        &self.fd
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EventChannelReceiver {
-    fd: Arc<OwnedFd>,
+    fd: Arc<AtomicOwnedFd>,
 }
 
 impl EventChannelReceiver {
-    fn new(fd: Arc<OwnedFd>) -> Self {
+    fn new(fd: Arc<AtomicOwnedFd>) -> Self {
         Self { fd }
     }
 
@@ -173,5 +187,11 @@ impl EventChannelReceiver {
 impl AsRawFd for EventChannelReceiver {
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
+    }
+}
+
+impl AsRef<AtomicOwnedFd> for EventChannelReceiver {
+    fn as_ref(&self) -> &AtomicOwnedFd {
+        &self.fd
     }
 }

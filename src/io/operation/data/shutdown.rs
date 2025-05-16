@@ -16,11 +16,7 @@ impl IoShutdownData {
     }
 }
 
-impl super::CompletableOperation for IoShutdownData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Success)
-    }
-}
+impl super::CompletableOperation for IoShutdownData {}
 
 impl super::AsUringEntry for IoShutdownData {
     fn as_uring_entry(&mut self, fd: std::os::fd::RawFd, key: crate::Key) -> io_uring::squeue::Entry {

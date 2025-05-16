@@ -1,15 +1,16 @@
 use std::{
-    os::fd::{
+    ffi::OsStr, os::{fd::{
         AsRawFd, 
         FromRawFd, 
         RawFd
-    }, 
-    path::{
+    }, unix::ffi::OsStrExt}, path::{
         Path, 
         PathBuf
-    }, 
-    sync::Arc
+    }, sync::Arc
 };
+
+use bytes::Bytes;
+use thiserror::Error;
 
 use crate::{
     io::{
@@ -24,18 +25,13 @@ use crate::{
         IoCompletion, 
         IoError, 
         IoOperation, 
-        IoOperationError, 
         OwnedFdAsync
     }, 
     OsError
 };
 
 use super::{
-    Directory, 
-    FileSystemError, 
-    FileSystemResult, 
-    IoStatsFuture, 
-    Stats
+    directory::MkdirError, Directory, IoStatsFuture, Stats
 };
 
 pub type IoFileFuture = IoOperationFuture<crate::io::fs::File>; 
@@ -47,21 +43,29 @@ pub struct File {
 }
 
 impl TryFromCompletion for File {
-    fn try_from_completion(completion: crate::io::IoCompletion) -> Result<Self, crate::io::IoError> {
+    fn try_from_completion(completion: crate::io::IoCompletion) -> Option<Self> {
         match completion {
             IoCompletion::File(data) => {
                 let fd = data.fd;
-                let path = data.path;
+                let path = PathBuf::from(OsStr::from_bytes(&data.path));
 
-                Ok(unsafe { File::new(fd, path) })
+                Some(unsafe { File::new(fd, path) })
             },
-            _ => {
-                Err(IoOperationError::UnexpectedPollResult(
-                    String::from("File future got unexpected poll result")
-                ).into())
-            }
+            _ => None
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum FileOpenError {
+    #[error("Invalid file open settings: {0}")]
+    InvalidFileOpenSettings(IoFileOpenSettings),
+
+    #[error("Failed to create directory for file: {0}")]
+    FailedToCreateDirectory(#[from] MkdirError),
+    
+    #[error("IO Error when attmepting to open file: {0}")]
+    IoError(#[from] IoError),
 }
 
 impl File {
@@ -79,43 +83,44 @@ impl File {
     pub async fn open(
         path: &Path,
         settings: IoFileOpenSettings
-    ) -> FileSystemResult<Self> {
+    ) -> Result<Self, FileOpenError> {
 
         if settings.is_dir() {
-            return Err(FileSystemError::InvalidFileOpenSettings(settings));
+            return Err(
+                FileOpenError::InvalidFileOpenSettings(settings)
+            );
         }
 
-        let r = Self::open_unchecked(
+        match Self::open_unchecked(
             path, 
             settings.clone()
-        ).await;
+        ).await {
+            Err(e) => {
+                if let Some(OsError::NotFound) = e.as_os_error() {
+                    if let IoFileCreateMode::Create(mode) = settings.mode() {
+                        match path.parent() {
+                            Some(parent) => {
+                                Directory::mkdir_recursive(
+                                    parent,
+                                    *mode
+                                ).await?;
 
-        if let Err(FileSystemError::Io(
-            IoError::Operation(IoOperationError::Os(OsError::NotFound)))
-        ) = r {
-            if let IoFileCreateMode::Create(mode) = settings.mode() {
-                match path.parent() {
-                    Some(parent) => {
-                        Directory::mkdir_recursive(
-                            parent,
-                            *mode
-                        ).await?;
-
-                        return Self::open_unchecked(path, settings).await
-                    },
-                    None => {}
+                                return Ok(Self::open_unchecked(path, settings).await?)
+                            },
+                            None => {}
+                        }
+                    }
                 }
-            }
-
+                Err(FileOpenError::IoError(e))
+            },
+            Ok(file) => Ok(file)
         }
-
-        r
     }
 
-    pub async fn open_unchecked(
+    pub (crate) async fn open_unchecked(
         path: &Path,
         settings: IoFileOpenSettings
-    ) -> FileSystemResult<Self> {
+    ) -> Result<Self, IoError> {
         Ok(IoFileFuture::new(
             IoOperation::open(
                 path, 
@@ -127,7 +132,7 @@ impl File {
     pub async fn set_path(
         &mut self,
         new_path: &Path,
-    ) -> FileSystemResult<()> {
+    ) -> Result<(), IoError> {
         IoVoidFuture::new(
             IoOperation::rename(
                 self.path(),
@@ -144,7 +149,7 @@ impl File {
         &self,
         flags: IoStatxFlags,
         mask: IoStatxMask,
-    ) -> FileSystemResult<Stats> {
+    ) -> Result<Stats, IoError> {
         Ok(IoStatsFuture::new(
             IoOperation::stats_fd(
                 self,
@@ -154,26 +159,23 @@ impl File {
         ).await?.into())
     }
 
-    pub async fn read_all(&self) -> FileSystemResult<Vec<u8>> {
+    pub async fn read_all(&self) -> Result<Bytes, IoError> {
         self.read_from(0).await
     }
 
     pub async fn read_from(
         &self,
         offset: usize
-    ) -> FileSystemResult<Vec<u8>> {
+    ) -> Result<Bytes, IoError> {
         
-        let size = match self.stats(
+        let size = self.stats(
             IoStatxFlags::DEFAULT,
             IoStatxMask::SIZE
-        ).await?.size {
-            Some(size) => size,
-            None => return Err(FileSystemError::Io(
-                IoError::Operation(IoOperationError::NoData))
-            )
-        } as usize;
+        ).await?.size.unwrap_or(0) as usize;
 
         let len = size - offset;
+
+        if len == 0 { return Ok(Bytes::new()); }
 
         Ok(IoReadFuture::new(
             IoOperation::read_at(
@@ -181,7 +183,7 @@ impl File {
                 offset,
                 len
             )
-        ).await?.into())
+        ).await?)
     }
     
     

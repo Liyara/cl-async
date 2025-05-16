@@ -1,11 +1,10 @@
 use std::os::fd::RawFd;
-
-use super::NetworkError;
+use crate::OsError;
 
 macro_rules! impl_option {
 
     ($name:ident, $level:ident, $option:ident) => {
-        fn $name<T>(fd: RawFd, value: T) -> Result<(), NetworkError> {
+        fn $name<T>(fd: RawFd, value: T) -> Result<(), OsError> {
             unsafe {
                 Self::setsockopt(fd, libc::$level, libc::$option, value)
             }
@@ -48,7 +47,7 @@ pub enum SocketOption {
 
 impl SocketOption {
 
-    unsafe fn setsockopt<T>(fd: RawFd, level: i32, option: i32, value: T) -> Result<(), NetworkError> {
+    unsafe fn setsockopt<T>(fd: RawFd, level: i32, option: i32, value: T) -> Result<(), OsError> {
         syscall!(
             setsockopt(
                 fd,
@@ -57,7 +56,7 @@ impl SocketOption {
                 &value as *const _ as *const libc::c_void,
                 std::mem::size_of_val(&value) as libc::socklen_t
             )
-        ).map_err(|e| NetworkError::SocketSetOptionError(e.into()))?;
+        ).map_err(OsError::from)?;
 
         Ok(())
     }
@@ -74,7 +73,7 @@ impl SocketOption {
     impl_option!(receive_buffer,        SOL_SOCKET,     SO_RCVBUF       );
     impl_option!(dont_route,            SOL_SOCKET,     SO_DONTROUTE    );
 
-    pub fn set(&self, fd: RawFd) -> Result<(), NetworkError> {
+    pub fn set(&self, fd: RawFd) -> Result<(), OsError> {
         match self {
             Self::Debug => Self::debug(fd, TRUE),
             Self::Broadcast => Self::broadcast(fd, TRUE),
@@ -92,8 +91,8 @@ impl SocketOption {
 }
 
 pub trait SocketConfigurable {
-    fn set_opt(&self, option: SocketOption) -> Result<&Self, NetworkError> where Self: Sized;
-    fn set_opt_multi(&self, options: &[SocketOption]) -> Result<&Self, NetworkError> where Self: Sized {
+    fn set_opt(&self, option: SocketOption) -> Result<&Self, OsError> where Self: Sized;
+    fn set_opt_multi(&self, options: &[SocketOption]) -> Result<&Self, OsError> where Self: Sized {
         for option in options {
             self.set_opt(*option)?;
         }

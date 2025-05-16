@@ -9,30 +9,29 @@ pub struct IoConnectData {
 
 impl IoConnectData {
     pub fn new(addr: PeerAddress) -> Result<Self, crate::io::IoSubmissionError> {
-        let addr: libc::sockaddr_storage = addr.try_into()?;
 
-        let addr_len = match addr.ss_family as libc::c_int {
+        let addr_storage: libc::sockaddr_storage = addr.into();
+
+        let addr_len = match addr_storage.ss_family as libc::c_int {
             libc::AF_INET => std::mem::size_of::<libc::sockaddr_in>(),
             libc::AF_INET6 => std::mem::size_of::<libc::sockaddr_in6>(),
+
+            // Likely impossible
             _ => return Err(
-                crate::io::IoSubmissionError::Network(
-                    crate::net::NetworkError::UnsupportedAddressFamily(addr.ss_family)
+                crate::io::IoSubmissionError::UnsupportedAddressFamily(
+                    addr_storage.ss_family,
                 )
             ),
         } as libc::socklen_t;
 
         Ok(Self {
-            addr: Box::new(addr),
+            addr: Box::new(addr_storage),
             addr_len,
         })
     }
 }
 
-impl super::CompletableOperation for IoConnectData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Success)
-    }
-}
+impl super::CompletableOperation for IoConnectData {}
 
 impl super::AsUringEntry for IoConnectData {
     fn as_uring_entry(&mut self, fd: RawFd, key: crate::Key) -> io_uring::squeue::Entry {

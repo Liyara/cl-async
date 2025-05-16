@@ -1,7 +1,8 @@
 #![feature(decl_macro)]
+#![feature(associated_type_defaults)]
 
 use once_cell::sync::OnceCell;
-use pool::PoolError;
+use pool::{NextWorkerError, SpawnTaskError, WorkerDispatchError};
 use thiserror::Error;
 
 #[macro_use]
@@ -16,6 +17,7 @@ mod key;
 mod os_error;
 mod pool;
 mod r#yield;
+mod atomic_owned_fd;
 
 pub mod io;
 pub mod events;
@@ -30,12 +32,16 @@ pub use task::Task;
 pub (crate) use worker::Worker;
 pub (crate) use pool::ThreadPool;
 pub use os_error::OsError;
+pub use atomic_owned_fd::AtomicOwnedFd;
 
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Executor error: {0}")]
     Executor(#[from] task::executor::ExecutorError),
+
+    #[error("Worker error: {0}")]
+    Worker(#[from] worker::WorkerError),
 
     #[error("Pool error: {0}")]
     Pool(#[from] pool::PoolError),
@@ -45,6 +51,9 @@ pub enum Error {
 
     #[error("IO error: {0}")]
     Io(#[from] io::IoError),
+
+    #[error("File system error: {0}")]
+    IoFileSystemError(#[from] io::fs::IoFileSystemError),
 
     #[error("Network error: {0}")]
     Network(#[from] net::NetworkError),
@@ -81,29 +90,19 @@ pub fn init(n_threads: usize) -> Result<()> {
 }
 
 // Schedules a new task to be executed by the thread pool.
-pub fn spawn<F>(fut: F) -> Result<()>
+pub fn spawn<F>(fut: F) -> std::result::Result<(), SpawnTaskError>
 where
     F: std::future::Future<Output = ()> + Send + 'static
 { Ok(pool().spawn(Task::new(fut))?) }
-
-// Schedules multiple tasks to be executed
-pub fn spawn_multiple<F>(fut: Vec<F>) -> Result<()>
-where
-    F: std::future::Future<Output = ()> + Send + 'static
-{ 
-    let mut tasks = Vec::with_capacity(fut.len());
-    for fut in fut { tasks.push(Task::new(fut)); }
-    Ok(pool().spawn_multiple(tasks)?)
-}
 
 // Blocks the current thread until all pool threads have been stopped.
 pub fn join() { pool().join() }
 
 // Gracefully stops all threads in the pool, allowing all tasks to finish.
-pub fn shutdown() -> Result<()> { Ok(pool().shutdown()?) }
+pub fn shutdown() { pool().shutdown() }
 
 // Immediately stops all threads in the pool, ignoring all tasks.
-pub fn kill() -> Result<()> { Ok(pool().kill()?) }
+pub fn kill() { pool().kill() }
 
 // Returns the number of threads in the pool.
 // This should always equal the number of CPUs.
@@ -113,23 +112,15 @@ pub fn num_threads() -> usize { pool().num_threads() }
 pub fn submit_io_operation(
     operation: io::IoOperation, 
     waker: Option<std::task::Waker>
-) -> std::result::Result<worker::WorkerIOSubmissionHandle, PoolError> {
+) -> std::result::Result<worker::WorkerIOSubmissionHandle, WorkerDispatchError> {
     Ok(pool().submit_io_operation(operation, waker)?)
-}
-
-// Submits multiple I/O operations to the pool.
-pub fn submit_io_operations(
-    operations: Vec<io::IoOperation>, 
-    waker: Option<std::task::Waker>
-) -> std::result::Result<worker::WorkerMultipleIOSubmissionHandle, PoolError> {
-    Ok(pool().submit_io_operations(operations, waker)?)
 }
 
 pub fn register_event_source<F, Fut>(
     source: events::EventSource,
     interest_type: events::InterestType,
     handler: F
-) -> Result<()>
+) -> std::result::Result<(), WorkerDispatchError>
 where
     F: FnOnce(events::EventReceiver) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static
@@ -139,8 +130,8 @@ pub fn sleep(duration: std::time::Duration) -> timing::futures::SleepFuture {
     timing::futures::SleepFuture::new(duration)
 }
 
-pub fn get_worker_handle(id: usize) -> Result<worker::WorkerHandle> {
-    Ok(pool().get_worker_handle(id)?)
+pub fn get_worker_handle(id: usize) -> Option<worker::WorkerHandle> {
+    pool().get_worker_handle(id)
 }
 
 pub fn next_worker_id() -> usize {
@@ -149,7 +140,7 @@ pub fn next_worker_id() -> usize {
 
 pub fn notify_on(
     flags: notifications::NotificationFlags,
-) -> Result<notifications::Subscription> {
+) -> std::result::Result<notifications::Subscription, NextWorkerError> {
     Ok(pool().notify_on(flags)?)
 }
 

@@ -1,5 +1,9 @@
-use std::path::PathBuf;
+use std::ffi::NulError;
 
+use bytes::Bytes;
+use bytes::BytesMut;
+use failure::IoFailure;
+use message::PrepareControlMessageError;
 use thiserror::Error;
 
 pub mod fs;
@@ -14,16 +18,21 @@ mod submission_queue;
 mod owned_fd_async;
 mod message;
 mod buffers;
+mod failure;
 
 pub use submission::IoSubmission;
 pub use submission_queue::IoSubmissionQueue;
+
 pub use entry::IoEntry;
-pub use completion_queue::IoCompletionQueue;
+
 pub use context::IoContext;
+pub use context::IoContextError;
 
 pub use operation::IoType;
 pub use operation::IoOperation;
 pub use operation::data as operation_data;
+
+pub use completion_queue::IoCompletionQueue;
 
 pub use completion::IoCompletion;
 pub use completion::IoCompletionResult;
@@ -32,14 +41,11 @@ pub use completion::data as completion_data;
 
 pub use owned_fd_async::OwnedFdAsync;
 
-pub use message::IoMessage;
 pub use message::IoControlMessage;
 pub use message::IoControlMessageLevel;
 pub use message::PacketInfo;
 pub use message::IpV6TrafficClass;
 pub use message::Credentials;
-pub use message::IoMessageFuture;
-pub use message::PreparedIoMessage;
 pub use message::SocketLevelType;
 pub use message::IpV4LevelType;
 pub use message::IpV6LevelType;
@@ -48,98 +54,111 @@ pub use message::TlsRecordType;
 pub use message::TlsAlertLevel;
 pub use message::TlsAlertDescription;
 pub use message::TlsAlert;
+pub use message::IoSendMessage;
+pub use message::IoRecvMessage;
+pub use message::IoMessage;
+pub use message::PendingIoMessage;
+pub use message::PreparedIoMessage;
 
 pub use buffers::IoInputBuffer;
 pub use buffers::IoOutputBuffer;
-pub use buffers::IoBuffer;
 pub use buffers::GenerateIoVecs;
-pub use buffers::IoDoubleBuffer;
-pub use buffers::IoDoubleInputBuffer;
-pub use buffers::IoDoubleOutputBuffer;
 
-use crate::net::NetworkError;
+use crate::pool::WorkerDispatchError;
 use crate::OsError;
 
+// These errors occur before an operation leaves the calling thread
 #[derive(Debug, Error)]
 pub enum IoSubmissionError {
-    #[error("Failed to send operation to worker: {0}")]
-    FailedToSendOperation(#[from] crate::worker::work_sender::WorkSenderError),
 
-    #[error("Failed to submit IO operation request: {0}")]
-    FailedToSubmitIoOperationRequest(String),
+    #[error("Empty input buffer")]
+    EmptyInputBuffer(Bytes),
 
-    #[error("Invalid String: {0}")]
-    InvalidString(#[from] std::ffi::NulError),
+    #[error("Empty vectored input buffer")]
+    EmptyVectoredInputBuffer(Vec<Bytes>),
 
-    #[error("Invalid path: {0}")]
-    InvalidPath(PathBuf),
+    #[error("vectored input buffer contains empty buffer at index {i}")]
+    EmptyVectoredInputBufferEntry {
+        i: usize,
+        buffers: Vec<Bytes>,
+    },
 
-    #[error("Failed to register event channel: {source}")]
-    FailedToRegisterEventChannel { source: std::io::Error },
+    #[error("Non-contiguous input buffer")]
+    NonContiguousInputBuffer(Bytes),
+    
+    #[error("Empty output buffer")]
+    EmptyOutputBuffer(BytesMut),
 
-    #[error("Failed to push SQE: {0}")]
-    FailedToPushSQE(#[from] io_uring::squeue::PushError),
+    #[error("Empty vectored output buffer")]
+    EmptyVectoredOutputBuffer(Vec<BytesMut>),
 
-    #[error("Failed to submit IO entries to kernel: {source}")]
-    FailedToSubmitEntries { source: std::io::Error},
+    #[error("vectored output buffer contains empty buffer at index {i}")]
+    EmptyVectoredOutputBufferEntry {
+        i: usize,
+        buffers: Vec<BytesMut>,
+    },
 
-    #[error("Network Error: {0}")]
-    Network(#[from] NetworkError),
+    #[error("Unsupported address family: {0}")]
+    UnsupportedAddressFamily(libc::sa_family_t),
 
-    #[error("Empty buffer")]
-    EmptyBuffer,
+    #[error("A string was passed with interior null bytes ({0})")]
+    StringWithInteriorNullBytes(#[from] NulError),
 
+    #[error("Could not locate any writable memory when generating io vecs.")]
+    NoWritableMemory,
+
+    #[error("Too many buffers were passed to the IO operation, {requested} > {max}")]
+    TooManyIoVecs {
+        requested: usize,
+        max: usize,
+    },
+
+    #[error("Failed to prepare control messages: {0}")]
+    FailedToPrepareControlMessages(#[source] PrepareControlMessageError),
+
+    #[error("Failed to dispatch operation to worker thread")]
+    FailedToDispatchOperation(#[from] WorkerDispatchError),
 }
 
+// These errors occur after an operation has been submitted to the kernel
 #[derive(Debug, Error)]
-pub enum IoOperationError {
+#[error("Error occured during IO operation: {os_error}")]
+pub struct IoOperationError {
 
-    #[error("OS Error: {0}")]
-    Os(#[from] OsError),
+    failure: IoFailure,
 
-    #[error("Network Error: {0}")]
-    Network(#[from] NetworkError),
-
-    #[error("Invalid UTF-8: {0}")]
-    InvalidFromUtf8(#[from] std::string::FromUtf8Error),
-
-    #[error("Invalid UTF-8: {0}")]
-    InvalidIntoUtf8C(#[from] std::ffi::IntoStringError),
-
-    #[error("Invalid path: {0}")]
-    InvalidPath(PathBuf),
-
-    #[error("Expected output is empty")]
-    NoData,
-
-    #[error("Invalid pointer")]
-    InvalidPtr,
-
-    #[error("Buffer overflow: allowed {0} bytes, but got {1}")]
-    BufferOverflow(usize, usize),
-
-    #[error("Index out of bounds: {0}")]
-    OutOfBounds(usize),
-
-    #[error("Invalid operation: {0}")]
-    InvalidOperation(String),
-
-    #[error("Unexpected completion poll result: {0}")]
-    UnexpectedPollResult(String),
+    #[source]
+    os_error: OsError
 }
 
+// These errors occur after a completion has been received from the kernel
+#[derive(Debug, Error)]
+pub enum IoProcessingError {
+    #[error("Got unexpected completion result: {0}")]
+    UnexpectedCompletionResult(String),
+}
+
+// General wrapper for all IO errors
 #[derive(Debug, Error)]
 pub enum IoError {
-    #[error("Submission error: {0}")]
+    #[error("IO Submission error: {0}")]
     Submission(#[from] IoSubmissionError),
 
-    #[error("Operation error: {0}")]
+    #[error("IO Operation error: {0}")]
     Operation(#[from] IoOperationError),
 
-    #[error("Failed to create IO Context: {source}")]
-    FailedToCreateContext { source: std::io::Error },
+    #[error("IO Context error: {0}")]
+    Context(#[from] IoContextError),
+
+    #[error("IO Processing error: {0}")]
+    Processing(#[from] IoProcessingError),
 }
 
-pub type IoSubmissionResult<T> = std::result::Result<T, IoSubmissionError>;
-//type IoOperationResult<T> = std::result::Result<T, IoOperationError>;
-pub type IoResult<T> = std::result::Result<T, IoError>;
+impl IoError {
+    pub fn as_os_error(&self) -> Option<&OsError> {
+        match self {
+            IoError::Operation(e) => Some(&e.os_error),
+            _ => None,
+        }
+    }
+}

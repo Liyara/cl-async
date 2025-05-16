@@ -1,6 +1,6 @@
 use std::{ffi::CString, os::unix::ffi::OsStrExt, path::Path};
 
-use crate::io::IoSubmissionResult;
+use crate::io::IoSubmissionError;
 
 pub struct IoRenameData {
     old_path: CString,
@@ -8,18 +8,14 @@ pub struct IoRenameData {
 }
 
 impl IoRenameData {
-    pub fn new(old_path: &Path, new_path: &Path) -> IoSubmissionResult<Self> {
+    pub fn new(old_path: &Path, new_path: &Path) -> Result<Self, IoSubmissionError> {
         let old_path = CString::new(old_path.as_os_str().as_bytes())?;
         let new_path = CString::new(new_path.as_os_str().as_bytes())?;
         Ok(Self { old_path, new_path })
     }
 }
 
-impl super::CompletableOperation for IoRenameData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Success)
-    }
-}
+impl super::CompletableOperation for IoRenameData {}
 
 impl super::AsUringEntry for IoRenameData {
     fn as_uring_entry(&mut self, fd: std::os::fd::RawFd, key: crate::Key) -> io_uring::squeue::Entry {

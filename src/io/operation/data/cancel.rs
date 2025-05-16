@@ -13,8 +13,8 @@ impl IoCancelData {
 }
 
 impl super::CompletableOperation for IoCancelData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Success)
+    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletion {
+        crate::io::IoCompletion::Success
     }
 }
 

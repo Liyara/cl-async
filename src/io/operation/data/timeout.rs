@@ -15,11 +15,7 @@ impl IoTimeoutData {
     }
 }
 
-impl super::CompletableOperation for IoTimeoutData {
-    fn get_completion(&mut self, _: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Success)
-    }
-}
+impl super::CompletableOperation for IoTimeoutData {}
 
 impl super::AsUringEntry for IoTimeoutData {
     fn as_uring_entry(&mut self, _: std::os::fd::RawFd, key: crate::Key) -> io_uring::squeue::Entry {

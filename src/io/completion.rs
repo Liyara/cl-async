@@ -3,21 +3,19 @@ use std::collections::VecDeque;
 use crate::OsError;
 
 use super::{
-    IoEntry, IoError, IoOperation, IoOperationError
+    IoEntry, IoOperation, IoOperationError
 };
 
 pub mod data {
 
-    use std::{os::fd::RawFd, path::PathBuf};
+    use std::os::fd::RawFd;
 
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
 
-    use crate::{
-        io::{operation_data::IoStatxMask, IoMessage},
-        net::PeerAddress, 
-    };
+    use crate::io::{message::IoRecvMessage, operation_data::IoStatxMask};
 
     pub struct IoReadCompletion {
+        pub buffer: BytesMut,
         pub bytes_read: usize,
     }
 
@@ -31,17 +29,17 @@ pub mod data {
     }
 
     pub struct IoMsgCompletion {
-        pub msg: IoMessage
+        pub msg: IoRecvMessage
     }
 
     pub struct IoAcceptCompletion {
         pub fd: RawFd,
-        pub address: Option<PeerAddress>,
+        pub address: Option<libc::sockaddr_storage>,
     }
 
     pub struct IoFileCompletion {
         pub fd: RawFd,
-        pub path: PathBuf,
+        pub path: Bytes,
     }
 
     pub struct IoStatxCompletion {
@@ -89,8 +87,10 @@ impl IoMultiCompletionResult {
 
     pub fn complete(&mut self, result: i32) {
         let completion = self.op.complete(result);
-        if let Err(IoOperationError::Os(OsError::OperationCanceled)) = &completion {
-            self.state = MultiCompletionResultState::Draining;
+        if let Err(e) = &completion {
+            if let OsError::OperationCanceled = e.os_error {
+                self.state = MultiCompletionResultState::Draining;
+            }
         }
         self.inner.push_back(completion);
     }
@@ -153,5 +153,5 @@ impl IoCompletionState {
 }
 
 pub trait TryFromCompletion: Sized {
-    fn try_from_completion(completion: IoCompletion) -> Result<Self, IoError>;
+    fn try_from_completion(completion: IoCompletion) -> Option<Self>;
 }

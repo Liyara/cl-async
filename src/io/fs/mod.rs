@@ -1,11 +1,10 @@
-use thiserror::Error;
-
 mod file;
 mod stats;
 mod directory;
 
 pub use file::File;
 pub use file::IoFileFuture;
+pub use file::FileOpenError;
 
 pub use stats::Stats;
 pub use stats::IoStatsFuture;
@@ -14,16 +13,18 @@ pub use directory::Directory;
 pub use directory::IoDirectoryFuture;
 pub use directory::DirectoryEntry;
 pub use directory::DirectoryStream;
-
-use super::{operation_data::IoFileOpenSettings, IoError};
+pub use directory::MkdirError;
+pub use directory::OpenDirectoryError;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum FileSystemError {
-    #[error("IO Error: {0}")]
-    Io(#[from] IoError),
+pub enum IoFileSystemError {
+    #[error("Failed to create directory: {0}")]
+    MkdirError(#[from] MkdirError),
 
-    #[error("Invalid file open settings: {0}")]
-    InvalidFileOpenSettings(IoFileOpenSettings),
+    #[error("Failed to open file: {0}")]
+    OpenFileError(#[from] FileOpenError),
+
+    #[error("Failed to open directory: {0}")]
+    OpenDirectoryError(#[from] OpenDirectoryError),
 }
-
-pub type FileSystemResult<T> = std::result::Result<T, FileSystemError>;

@@ -1,13 +1,16 @@
-use std::{os::fd::{
+use std::{fmt, os::fd::{
     AsRawFd, 
     RawFd
 }, path::Path};
 
+use bytes::BytesMut;
 use enum_dispatch::enum_dispatch;
 use crate::{net::PeerAddress, OsError};
 use crate::Key;
+use super::IoCompletion;
+use super::IoFailure;
 use data::{AsUringEntry, CompletableOperation};
-use super::{IoCompletionResult, IoInputBuffer, IoMessage, IoOperationError, IoOutputBuffer, IoResult};
+use super::{buffers::{IoVecInputBuffer, IoVecOutputBuffer}, message::IoSendMessage, IoCompletionResult, IoInputBuffer, IoOutputBuffer, IoSubmissionError};
 
 pub mod data;
 
@@ -41,13 +44,44 @@ pub enum IoType {
     AcceptMulti(data::IoAcceptMultiData),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl fmt::Debug for IoType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IoType::Read(_) => write!(f, "IoType::Read"),
+            IoType::Write(_) => write!(f, "IoType::Write"),
+            IoType::Accept(_) => write!(f, "IoType::Accept"),
+            IoType::Close(_) => write!(f, "IoType::Close"),
+            IoType::Recv(_) => write!(f, "IoType::Recv"),
+            IoType::Send(_) => write!(f, "IoType::Send"),
+            IoType::Readv(_) => write!(f, "IoType::Readv"),
+            IoType::Writev(_) => write!(f, "IoType::Writev"),
+            IoType::RecvMsg(_) => write!(f, "IoType::RecvMsg"),
+            IoType::SendMsg(_) => write!(f, "IoType::SendMsg"),
+            IoType::Connect(_) => write!(f, "IoType::Connect"),
+            IoType::Shutdown(_) => write!(f, "IoType::Shutdown"),
+            IoType::OpenAt(_) => write!(f, "IoType::OpenAt"),
+            IoType::Statx(_) => write!(f, "IoType::Statx"),
+            IoType::Unlink(_) => write!(f, "IoType::Unlink"),
+            IoType::Rename(_) => write!(f, "IoType::Rename"),
+            IoType::MkDir(_) => write!(f, "IoType::MkDir"),
+            IoType::Cancel(_) => write!(f, "IoType::Cancel"),
+            IoType::Splice(_) => write!(f, "IoType::Splice"),
+            IoType::FSync(_) => write!(f, "IoType::FSync"),
+            IoType::Timeout(_) => write!(f, "IoType:Timeout"),
+            IoType::AcceptMulti(_) => write!(f, "IoOperation:AcceptMulti"),
+            IoType::Fdatasync(_) => write!(f, "IoType::Fdatasync"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoDuration {
     Zero,
     Single,
     Persistent,
 }
 
+#[derive(Debug)]
 pub struct IoOperation {
     fd: RawFd,
     t: IoType,
@@ -59,6 +93,8 @@ impl IoOperation {
     pub fn io_type(&self) -> &IoType { &self.t }
     pub fn io_type_mut(&mut self) -> &mut IoType { &mut self.t }
     pub fn duration(&self) -> IoDuration { self.duration }
+    pub fn fd(&self) -> RawFd { self.fd }
+    pub fn into_type(self) -> IoType { self.t }
 
 
     /*
@@ -108,7 +144,7 @@ impl IoOperation {
     pub fn readv<T: AsRawFd>(
         fd: &T, 
         buffers_lengths: Vec<usize>
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Self::readv_at(fd, 0, buffers_lengths)
     }
 
@@ -116,30 +152,30 @@ impl IoOperation {
         fd: &T, 
         offset: usize, 
         buffers_lengths: Vec<usize>
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         let mut buffers = Vec::with_capacity(buffers_lengths.len());
         for len in buffers_lengths {
-            buffers.push(Vec::with_capacity(len));
+            buffers.push(BytesMut::with_capacity(len));
         }
         Self::readv_at_into(
             fd, 
             offset, 
-            IoDoubleOutputBuffer::new(buffers)?
+            IoVecOutputBuffer::new(buffers)?
         )
     }
 
     pub fn readv_into<T: AsRawFd>(
         fd: &T, 
-        buffers: IoDoubleOutputBuffer,
-    ) -> IoResult<Self> {
+        buffers: IoVecOutputBuffer,
+    ) -> Result<Self, IoSubmissionError> {
         Self::readv_at_into(fd, 0, buffers)
     }
 
     pub fn readv_at_into<T: AsRawFd>(
         fd: &T, 
         offset: usize, 
-        buffers: IoDoubleOutputBuffer
-    ) -> IoResult<Self> {
+        buffers: IoVecOutputBuffer
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: fd.as_raw_fd(),
             t: IoType::Readv(data::IoReadvData::new(
@@ -155,52 +191,36 @@ impl IoOperation {
         buffer_lengths: Vec<usize>,
         control_length: usize,
         flags: data::IoRecvMsgInputFlags,
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
 
-        let buffers = if buffer_lengths.is_empty() {
-            None
-        } else {
-            let mut buffers = Vec::with_capacity(buffer_lengths.len());
-            for len in buffer_lengths {
-                buffers.push(Vec::with_capacity(len));
-            }
-            Some(IoDoubleOutputBuffer::new(buffers)?)
-        };
+        let buffers = if buffer_lengths.len() > 0 {Some(
+                IoVecOutputBuffer::new(
+                buffer_lengths.into_iter()
+                    .map(|len| BytesMut::with_capacity(len))
+                    .collect::<Vec<_>>()
+            )?
+        )} else { None };
 
         let control = if control_length > 0 {
-            Some(vec![0; control_length])
+            Some(IoOutputBuffer::with_capacity(control_length))
         } else {
             None
         };
 
-        Ok(Self {
-            fd: fd.as_raw_fd(),
-            t: IoType::RecvMsg(data::IoRecvMsgData::new(
-                buffers,
-                control,
-                flags,
-            )?),
-            duration: IoDuration::Single,
-        })
+        Self::recv_msg_into(
+            fd,
+            buffers,
+            control,
+            flags,
+        )
     }
 
     pub fn recv_msg_into<T: AsRawFd>(
         fd: &T,
-        buffers: Option<Vec<Vec<u8>>>,
-        control: Option<Vec<u8>>,
+        buffers: Option<IoVecOutputBuffer>,
+        control: Option<IoOutputBuffer>,
         flags: data::IoRecvMsgInputFlags,
-    ) -> IoResult<Self> {
-
-        if buffers.is_none() && control.is_none() {
-            return Err(IoOperationError::NoData.into());
-        }
-
-        let buffers = if let Some(buffers) = buffers {
-            Some(IoDoubleOutputBuffer::new(buffers)?)
-        } else {
-            None
-        };
-
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: fd.as_raw_fd(),
             t: IoType::RecvMsg(data::IoRecvMsgData::new(
@@ -210,7 +230,6 @@ impl IoOperation {
             )?),
             duration: IoDuration::Single,
         })
-
     }
 
     /*
@@ -247,9 +266,9 @@ impl IoOperation {
 
     pub fn send_msg<T: AsRawFd>(
         fd: &T,
-        message: IoMessage,
+        message: IoSendMessage,
         flags: data::IoSendFlags,
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: fd.as_raw_fd(),
             t: IoType::SendMsg(data::IoSendMsgData::new(
@@ -260,11 +279,11 @@ impl IoOperation {
         })
     }
 
-    pub fn writev<T: AsRawFd>(fd: &T, buffers: IoDoubleInputBuffer) -> IoResult<Self> {
+    pub fn writev<T: AsRawFd>(fd: &T, buffers: IoVecInputBuffer) -> Result<Self, IoSubmissionError> {
         Self::writev_at(fd, 0, buffers)
     }
 
-    pub fn writev_at<T: AsRawFd>(fd: &T, offset: usize, buffers: IoDoubleInputBuffer) -> IoResult<Self> {
+    pub fn writev_at<T: AsRawFd>(fd: &T, offset: usize, buffers: IoVecInputBuffer) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: fd.as_raw_fd(),
             t: IoType::Writev(data::IoWritevData::new(
@@ -318,7 +337,7 @@ impl IoOperation {
         }
     }
 
-    fn _connect<T: AsRawFd>(fd: &T, addr: PeerAddress, duration: IoDuration) -> IoResult<Self> {
+    fn _connect<T: AsRawFd>(fd: &T, addr: PeerAddress, duration: IoDuration) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: fd.as_raw_fd(),
             t: IoType::Connect(data::IoConnectData::new(addr)?),
@@ -326,11 +345,11 @@ impl IoOperation {
         })
     }
 
-    pub fn connect<T: AsRawFd>(fd: &T, addr: PeerAddress) -> IoResult<Self> {
+    pub fn connect<T: AsRawFd>(fd: &T, addr: PeerAddress) -> Result<Self, IoSubmissionError> {
         Self::_connect(fd, addr, IoDuration::Single)
     }
 
-    pub fn connect_forget<T: AsRawFd>(fd: &T, addr: PeerAddress) -> IoResult<Self> {
+    pub fn connect_forget<T: AsRawFd>(fd: &T, addr: PeerAddress) -> Result<Self, IoSubmissionError> {
         Self::_connect(fd, addr, IoDuration::Zero)
     }
 
@@ -393,7 +412,7 @@ impl IoOperation {
     pub fn open(
         path: &Path,
         settings: data::IoFileOpenSettings
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: libc::AT_FDCWD,
             t: IoType::OpenAt(data::IoOpenAtData::new(
@@ -408,7 +427,7 @@ impl IoOperation {
         fd: &T,
         flags: data::IoStatxFlags,
         mask: data::IoStatxMask,
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: fd.as_raw_fd(),
             t: IoType::Statx(data::IoStatxData::new(
@@ -424,7 +443,7 @@ impl IoOperation {
         path: &Path,
         flags: data::IoStatxFlags,
         mask: data::IoStatxMask,
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: libc::AT_FDCWD,
             t: IoType::Statx(data::IoStatxData::new(
@@ -439,7 +458,7 @@ impl IoOperation {
     fn _unlink(
         path: &Path,
         duration: IoDuration,
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: libc::AT_FDCWD,
             t: IoType::Unlink(data::IoUnlinkData::new(path)?),
@@ -447,11 +466,11 @@ impl IoOperation {
         })
     }
 
-    pub fn unlink(path: &Path) -> IoResult<Self> {
+    pub fn unlink(path: &Path) -> Result<Self, IoSubmissionError> {
         Self::_unlink(path, IoDuration::Single)
     }
 
-    pub fn unlink_forget(path: &Path) -> IoResult<Self> {
+    pub fn unlink_forget(path: &Path) -> Result<Self, IoSubmissionError> {
         Self::_unlink(path, IoDuration::Zero)
     }
 
@@ -459,7 +478,7 @@ impl IoOperation {
         path: &Path,
         mode: data::IoFileSystemMode,
         duration: IoDuration,
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: libc::AT_FDCWD,
             t: IoType::MkDir(data::IoMkdirData::new(
@@ -470,11 +489,11 @@ impl IoOperation {
         })
     }
 
-    pub fn mkdir(path: &Path, mode: data::IoFileSystemMode) -> IoResult<Self> {
+    pub fn mkdir(path: &Path, mode: data::IoFileSystemMode) -> Result<Self, IoSubmissionError> {
         Self::_mkdir(path, mode, IoDuration::Single)
     }
 
-    pub fn mkdir_forget(path: &Path, mode: data::IoFileSystemMode) -> IoResult<Self> {
+    pub fn mkdir_forget(path: &Path, mode: data::IoFileSystemMode) -> Result<Self, IoSubmissionError> {
         Self::_mkdir(path, mode, IoDuration::Zero)
     }
 
@@ -482,7 +501,7 @@ impl IoOperation {
         old_path: &Path,
         new_path: &Path,
         duration: IoDuration,
-    ) -> IoResult<Self> {
+    ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: libc::AT_FDCWD,
             t: IoType::Rename(data::IoRenameData::new(
@@ -493,11 +512,11 @@ impl IoOperation {
         })
     }
 
-    pub fn rename(old_path: &Path, new_path: &Path) -> IoResult<Self> {
+    pub fn rename(old_path: &Path, new_path: &Path) -> Result<Self, IoSubmissionError> {
         Self::_rename(old_path, new_path, IoDuration::Single)
     }
 
-    pub fn rename_forget(old_path: &Path, new_path: &Path) -> IoResult<Self> {
+    pub fn rename_forget(old_path: &Path, new_path: &Path) -> Result<Self, IoSubmissionError> {
         Self::_rename(old_path, new_path, IoDuration::Zero)
     }
 
@@ -589,9 +608,14 @@ impl IoOperation {
         result_code: i32
     ) -> IoCompletionResult {
         if result_code < 0 {
-            Err(OsError::from(-result_code).into()) 
+            let os_error = OsError::from(-result_code).into();
+            let failure = self.t.get_failure();
+            Err(super::IoOperationError { 
+                failure, 
+                os_error
+            })
         } else {
-            self.t.get_completion(result_code as u32)
+            Ok(self.t.get_completion(result_code as u32))
         }
     }
 

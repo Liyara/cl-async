@@ -1,4 +1,4 @@
-use crate::io::{IoBuffer, IoInputBuffer};
+use crate::io::IoInputBuffer;
 
 pub struct IoWriteData {
     buffer: IoInputBuffer,
@@ -12,13 +12,21 @@ impl IoWriteData {
             offset,
         }
     }
+
+    pub fn buffer(&self) -> &IoInputBuffer {
+        &self.buffer
+    }
+
+    pub fn into_buffer(self) -> IoInputBuffer {
+        self.buffer
+    }
 }
 
 impl super::CompletableOperation for IoWriteData {
-    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletionResult {
-        Ok(crate::io::IoCompletion::Write(crate::io::completion_data::IoWriteCompletion {
+    fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletion {
+        crate::io::IoCompletion::Write(crate::io::completion_data::IoWriteCompletion {
             bytes_written: result_code as usize,
-        }))
+        })
     }
 }
 
@@ -28,7 +36,7 @@ impl super::AsUringEntry for IoWriteData {
             io_uring::opcode::Write::new(
                 io_uring::types::Fd(fd),
                 self.buffer.as_ptr(),
-                self.buffer.buffer_limit() as _,
+                self.buffer.readable_len() as u32,
             ).offset(self.offset as _)
             .build().user_data(key.as_u64())
         }
