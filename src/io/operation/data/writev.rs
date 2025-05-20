@@ -1,4 +1,4 @@
-use crate::io::{buffers::IoVecInputBuffer, GenerateIoVecs, IoSubmissionError};
+use crate::io::{buffers::{IoVecInputBuffer, IoVecInputSource}, GenerateIoVecs, InputBufferSubmissionError, InputBufferVecSubmissionError, IoSubmissionError};
 
 struct IoWritevDataInner {
     _iovec: IoVecInputBuffer,
@@ -7,8 +7,36 @@ struct IoWritevDataInner {
 
 impl IoWritevDataInner {
     fn new(mut _iovec: IoVecInputBuffer) -> Result<Self, IoSubmissionError> {
+
+        let is_single_source = match _iovec.as_source() {
+            IoVecInputSource::Single(_) => true,
+            IoVecInputSource::Multiple(_) => false,
+        };
         
-        let _iovec_ptr = unsafe { _iovec.generate_iovecs()? };
+        let gen_ret = unsafe { _iovec.generate_iovecs() };
+
+        let _iovec_ptr = match gen_ret {
+            Ok(v) => v,
+            Err(e) => {
+                let submission_error = if is_single_source {
+                    IoSubmissionError::from(
+                        InputBufferSubmissionError::InvalidIoVec {
+                            buffer: unsafe { _iovec.into_bytes() },
+                            source: e,
+                        }
+                    )
+                } else {
+                    IoSubmissionError::from(
+                        InputBufferVecSubmissionError::InvalidIoVec {
+                            buffer: unsafe { _iovec.into_vec() },
+                            source: e,
+                        }
+                    )
+                };
+
+                return Err(submission_error);
+            }
+        };
 
         Ok(Self {
             _iovec,

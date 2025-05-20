@@ -1,10 +1,10 @@
 [package]
 name = "cl-async"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2024"
 
 [features]
-default = ["log-warn", "log-error", "log-info"]
+default = ["log-warn", "log-error"]
 log-info = ["log", "cl-log"]
 log-warn = ["log", "cl-log"]
 log-error = ["log", "cl-log"]

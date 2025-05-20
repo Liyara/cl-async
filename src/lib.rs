@@ -37,8 +37,6 @@ pub use atomic_owned_fd::AtomicOwnedFd;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Executor error: {0}")]
-    Executor(#[from] task::executor::ExecutorError),
 
     #[error("Worker error: {0}")]
     Worker(#[from] worker::WorkerError),
@@ -53,7 +51,7 @@ pub enum Error {
     Io(#[from] io::IoError),
 
     #[error("File system error: {0}")]
-    IoFileSystemError(#[from] io::fs::IoFileSystemError),
+    IoFileSystem(#[from] io::fs::IoFileSystemError),
 
     #[error("Network error: {0}")]
     Network(#[from] net::NetworkError),
@@ -63,6 +61,7 @@ pub enum Error {
 
     #[error("Pool already initialized")]
     AlreadyInitialized,
+    
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -112,7 +111,7 @@ pub fn num_threads() -> usize { pool().num_threads() }
 pub fn submit_io_operation(
     operation: io::IoOperation, 
     waker: Option<std::task::Waker>
-) -> std::result::Result<worker::WorkerIOSubmissionHandle, WorkerDispatchError> {
+) -> std::result::Result<worker::WorkerIOSubmissionHandle, WorkerDispatchError<io::IoOperation>> {
     Ok(pool().submit_io_operation(operation, waker)?)
 }
 
@@ -120,7 +119,7 @@ pub fn register_event_source<F, Fut>(
     source: events::EventSource,
     interest_type: events::InterestType,
     handler: F
-) -> std::result::Result<(), WorkerDispatchError>
+) -> std::result::Result<(), WorkerDispatchError<events::EventSource>>
 where
     F: FnOnce(events::EventReceiver) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static

@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 use bytes::BytesMut;
-use crate::io::{failure::{data::IoReadFailure, IoFailure}, IoOutputBuffer};
+use crate::io::{failure::{data::IoReadFailure, IoFailure}, IoBytesMutRecovery, IoOutputBuffer};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +40,7 @@ impl IoRecvData {
 
 impl super::CompletableOperation for IoRecvData {
     fn get_completion(&mut self, result_code: u32) -> crate::io::IoCompletion {
+
         let bytes_read = result_code as usize;
 
         let buffer = self.buffer.take().map(|b| {
@@ -50,7 +51,7 @@ impl super::CompletableOperation for IoRecvData {
                     e.into_buffer()
                 }
             }
-        }).unwrap_or({
+        }).unwrap_or_else(|| {
             warn!("cl-async: recv(): Expected buffer but got None; returning empty buffer");
             BytesMut::new()
         });
@@ -65,7 +66,7 @@ impl super::CompletableOperation for IoRecvData {
         IoFailure::Read(IoReadFailure {
             buffer: self.buffer.take().map(|b| {
                 b.into_bytes_unchecked()
-            }).unwrap_or({
+            }).unwrap_or_else(|| {
                 warn!("cl-async: recv(): Expected buffer but got None; returning empty buffer");
                 BytesMut::new()
             }),
@@ -85,5 +86,19 @@ impl super::AsUringEntry for IoRecvData {
             ).flags(self.flags.bits())
             .build().user_data(key.as_u64())
         }
+    }
+}
+
+impl IoBytesMutRecovery for IoRecvData {
+    fn as_bytes_mut(&self) -> Option<&BytesMut> {
+        self.buffer.as_ref().map(|b| {
+            b.as_bytes()
+        })
+    }
+    
+    fn into_bytes_mut(self) -> Option<BytesMut> {
+        self.buffer.map(|b| {
+            b.into_bytes_unchecked()
+        })
     }
 }

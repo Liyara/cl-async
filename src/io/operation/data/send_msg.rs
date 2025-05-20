@@ -1,4 +1,4 @@
-use crate::io::{message::{IoSendMessage, PreparedIoMessage, PreparedIoMessageBuilder}, IoControlMessage, IoInputBuffer, IoSubmissionError};
+use crate::io::{message::{IoSendMessage, PreparedIoMessage, PreparedIoMessageBuilder}, InputBufferSubmissionError, IoControlMessage, IoInputBuffer, IoSubmissionError};
 use super::send::IoSendFlags;
 
 pub struct IoSendMsgData {
@@ -20,7 +20,7 @@ impl IoSendMsgData {
                 control
             ).map_err(|e| {
                 IoSubmissionError::FailedToPrepareControlMessages(e)
-            })?)?;
+            })?).map_err(InputBufferSubmissionError::from)?;
 
             builder.set_control(control_buffer);
         }

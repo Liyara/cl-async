@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 
-use crate::io::{failure::{data::IoReadFailure, IoFailure}, IoOutputBuffer};
+use crate::io::{failure::{data::IoReadFailure, IoFailure}, IoBytesMutRecovery, IoOutputBuffer};
 
 pub struct IoReadData {
     buffer: Option<IoOutputBuffer>,
@@ -38,7 +38,7 @@ impl super::CompletableOperation for IoReadData {
                     e.into_buffer()
                 }
             }
-        }).unwrap_or({
+        }).unwrap_or_else(|| {
             warn!("cl-async: read(): Expected buffer but got None; returning empty buffer");
             BytesMut::new()
         });
@@ -53,7 +53,7 @@ impl super::CompletableOperation for IoReadData {
         IoFailure::Read(IoReadFailure {
             buffer: self.buffer.take().map(|b| {
                 b.into_bytes_unchecked()
-            }).unwrap_or({
+            }).unwrap_or_else(|| {
                 warn!("cl-async: read(): Expected buffer but got None; returning empty buffer");
                 BytesMut::new()
             }),
@@ -74,5 +74,20 @@ impl super::AsUringEntry for IoReadData {
             ).offset(self.offset as u64)
             .build().user_data(key.as_u64())
         }
+    }
+}
+
+impl IoBytesMutRecovery for IoReadData {
+
+    fn as_bytes_mut(&self) -> Option<&BytesMut> {
+        self.buffer.as_ref().map(|b| {
+            b.as_bytes()
+        })
+    }
+
+    fn into_bytes_mut(self) -> Option<BytesMut> {
+        self.buffer.map(|b| {
+            b.into_bytes_unchecked()
+        })
     }
 }

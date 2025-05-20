@@ -5,6 +5,7 @@ use super::{
     IoOperation
 };
 
+#[derive(Debug)]
 pub struct IoSubmission {
     pub key: Key,
     pub op: IoOperation,

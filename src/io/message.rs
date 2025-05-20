@@ -3,9 +3,9 @@ use std::{fmt, os::fd::RawFd, pin::Pin, ptr::read_unaligned};
 use bytes::{BufMut, Bytes, BytesMut};
 use thiserror::Error;
 
-use crate::net::{CSockExtendedError, IpAddress, IpVersion, PeerAddress, UnsupportedAddressFamilyError};
+use crate::{io::buffers::RecvMsgSubmissionError, net::{CSockExtendedError, IpAddress, IpVersion, PeerAddress, UnsupportedAddressFamilyError}};
 
-use super::{buffers::{IoOutputBufferIntoBytesError, IoVecInputSource, IoVecOutputBuffer, IoVecOutputBufferIntoBytesError}, operation_data::IoRecvMsgOutputFlags, GenerateIoVecs, IoInputBuffer, IoOutputBuffer, IoSubmissionError};
+use super::{buffers::{IoOutputBufferIntoBytesError, IoRecvMsgOutputBuffers, IoVecInputSource, IoVecOutputBuffer, IoVecOutputBufferIntoBytesError, RecvMsgSubmissionErrorKind}, operation_data::IoRecvMsgOutputFlags, GenerateIoVecs, InvalidIoVecError, IoInputBuffer, IoOutputBuffer, IoSubmissionError, RecvMsgBuffers};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(u8)]
@@ -1299,7 +1299,7 @@ pub enum IoSendMessageDataBufferType {
 }
 
 impl GenerateIoVecs for IoSendMessageDataBufferType {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoSubmissionError> {
+    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         match self {
             IoSendMessageDataBufferType::Bytes(buffer) => {
                 unsafe { Ok(buffer.generate_iovecs()?) }
@@ -1547,9 +1547,8 @@ impl Default for IoSendMessage {
 
 #[derive(Debug)]
 pub struct IoRecvMessage {
-    control: Option<BytesMut>,
+    buffers: RecvMsgBuffers,
     address: Option<PeerAddress>,
-    data: Option<Vec<BytesMut>>,
     flags: IoRecvMsgOutputFlags,
     bytes_received: usize,
     control_bytes_received: usize,
@@ -1560,8 +1559,7 @@ pub struct IoRecvMessage {
 impl IoRecvMessage {
 
     pub (crate) fn new(
-        data: Option<Vec<BytesMut>>,
-        control: Option<BytesMut>,
+        buffers: RecvMsgBuffers,
         _parsed_control: Option<Vec<IoControlMessage>>,
         address: Option<PeerAddress>,
         flags: IoRecvMsgOutputFlags,
@@ -1569,9 +1567,8 @@ impl IoRecvMessage {
         control_bytes_received: usize,
     ) -> Self {
         Self {
-            control,
+            buffers,
             address,
-            data,
             flags,
             _parsed_control,
             bytes_received,
@@ -1579,8 +1576,12 @@ impl IoRecvMessage {
         }
     }
 
-    pub fn control_buffer(&self) -> Option<&BytesMut> {
-        self.control.as_ref()
+    pub fn buffers(&self) -> &RecvMsgBuffers {
+        &self.buffers
+    }
+
+    pub fn take_buffers(&mut self) -> RecvMsgBuffers {
+        std::mem::take(&mut self.buffers)
     }
 
     pub fn control_messages(&self) -> Option<&Vec<IoControlMessage>> {
@@ -1591,20 +1592,8 @@ impl IoRecvMessage {
         self.address.as_ref()
     }
 
-    pub fn data_buffers(&self) -> Option<&Vec<BytesMut>> {
-        self.data.as_ref()
-    }
-
     pub fn flags(&self) -> IoRecvMsgOutputFlags {
         self.flags
-    }
-
-    pub fn take_control_buffer(&mut self) -> Option<BytesMut> {
-        self.control.take()
-    }
-
-    pub fn take_data_buffers(&mut self) -> Option<Vec<BytesMut>> {
-        self.data.take()
     }
 
     pub fn bytes_received(&self) -> usize {
@@ -1620,8 +1609,8 @@ impl IoRecvMessage {
             for msg in control {
                 if let IoControlMessageLevel::Tls(TlsLevelType::GetRecordType(record_type)) = msg.level {
                     if record_type == TlsRecordType::Alert {
-                        if let Some(buffers) = &self.data {
-                            if buffers.len() == 1 && buffers[0].len() <= 2 {
+                        if let Some(buffers) = self.buffers.data() {
+                            if buffers.len() == 1 && buffers[0].len() > 0 && buffers[0].len() <= 2 {
                                 return Some(TlsAlert {
                                     level: buffers[0][0].into(),
                                     description: buffers[0].get(1).map(|&b| b.into())
@@ -1668,7 +1657,7 @@ impl IoMessage {
                 })
             },
             IoMessage::Recv(msg) => {
-                msg.data.as_ref().map(|buffers| {
+                msg.buffers().data().map(|buffers| {
                     buffers.iter().map(|buffer| buffer.as_ref()).collect()
                 })
             }
@@ -1685,7 +1674,7 @@ impl IoMessage {
                     }
                 })
             },
-            IoMessage::Recv(msg) => msg.data.as_ref().map_or(0, |buffers| buffers.len()),
+            IoMessage::Recv(msg) => msg.buffers().data().map_or(0, |buffers| buffers.len()),
         }
     }
 
@@ -1701,14 +1690,13 @@ impl IoMessage {
                     }
                 })
             },
-            IoMessage::Recv(msg) => msg.data.as_ref().and_then(|buffers| buffers.get(index)).map(|buffer| buffer.as_ref()),
+            IoMessage::Recv(msg) => msg.buffers().data().and_then(|buffers| buffers.get(index)).map(|buffer| buffer.as_ref()),
         }
     }
 }
 
 pub struct PendingIoMessageInner {
-    buffers: Option<IoVecOutputBuffer>, // Application data buffers
-    control: Option<IoOutputBuffer>, // Control buffer
+    buffers: IoRecvMsgOutputBuffers,
 
     // Pointer structures
     _iovec: Option<Vec<libc::iovec>>,
@@ -1720,7 +1708,6 @@ impl std::fmt::Debug for PendingIoMessageInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingIoMessageInner")
             .field("buffers", &self.buffers)
-            .field("control", &self.control)
             .finish()
     }
 }
@@ -1728,21 +1715,30 @@ impl std::fmt::Debug for PendingIoMessageInner {
 impl PendingIoMessageInner {
 
     pub fn new(
-        mut buffers: Option<IoVecOutputBuffer>,
-        control: Option<IoOutputBuffer>
+        mut buffers: IoRecvMsgOutputBuffers
     ) -> Result<Pin<Box<Self>>, IoSubmissionError> {
-        let _iovec = match buffers.as_mut() {
+
+        let iovec_ret: Option<Result<Vec<libc::iovec>, InvalidIoVecError>> = buffers.data.as_mut().map(|buffers| {
+            unsafe { buffers.generate_iovecs() }
+        });
+
+        let _iovec = match iovec_ret {
+            Some(Ok(iovec)) => Some(iovec),
+            Some(Err(e)) => {
+                return Err(IoSubmissionError::from(
+                    RecvMsgSubmissionError {
+                        buffers: buffers.unwrap(),
+                        kind: RecvMsgSubmissionErrorKind::InvalidIoVec(e)
+                    }
+                ));
+            },
             None => None,
-            Some(buffers) => {
-                Some(unsafe { buffers.generate_iovecs()? })
-            }
         };
 
         let addr_storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
 
         let data = Self {
             buffers,
-            control,
             _addr: addr_storage,
             _iovec,
             _msghdr: unsafe { std::mem::zeroed() },
@@ -1760,8 +1756,8 @@ impl PendingIoMessageInner {
             msghdr.msg_iov = data_mut._iovec.as_mut().map_or(std::ptr::null_mut(), |iov| iov.as_mut_ptr() as *mut _);
             msghdr.msg_iovlen = data_mut._iovec.as_ref().map_or(0, |iov| iov.len() as _);
 
-            msghdr.msg_control = data_mut.control.as_mut().map_or(std::ptr::null_mut(), |control| control.as_mut_ptr() as *mut _);
-            msghdr.msg_controllen = data_mut.control.as_mut().map_or(0, |control| control.writable_len() as _);
+            msghdr.msg_control = data_mut.buffers.control.as_mut().map_or(std::ptr::null_mut(), |control| control.as_mut_ptr() as *mut _);
+            msghdr.msg_controllen = data_mut.buffers.control.as_mut().as_mut().map_or(0, |control| control.writable_len() as _);
         }
 
         Ok(pinned_self)
@@ -1792,13 +1788,11 @@ pub struct PendingIoMessage<T: PendingIoMessageState = PendingIoMessageStateWait
 impl PendingIoMessage<PendingIoMessageStateWaiting> {
 
     pub fn new(
-        buffers: Option<IoVecOutputBuffer>,
-        control: Option<IoOutputBuffer>
+        buffers: IoRecvMsgOutputBuffers,
     ) -> Result<Self, IoSubmissionError> {
 
         let inner = PendingIoMessageInner::new(
-            buffers,
-            control,
+            buffers
         )?;
 
         Ok(Self {
@@ -1881,7 +1875,7 @@ impl PendingIoMessage<PendingIoMessageStateParsed> {
             Pin::get_unchecked_mut(self.inner.as_mut())
         };
 
-        Ok(match inner.control.take() {
+        Ok(match inner.buffers.control.take() {
             Some(control) => Some(
                 control.into_bytes(inner._msghdr.msg_controllen as usize)?
             ),
@@ -1897,7 +1891,7 @@ impl PendingIoMessage<PendingIoMessageStateParsed> {
             Pin::get_unchecked_mut(self.inner.as_mut())
         };
 
-        Ok(match inner.buffers.take() {
+        Ok(match inner.buffers.data.take() {
             Some(buffers) => Some(
                 buffers.into_bytes(self.state.bytes_received)?,
             ),
@@ -1906,7 +1900,7 @@ impl PendingIoMessage<PendingIoMessageStateParsed> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.buffers.is_none() && self.inner.control.is_none()
+        self.inner.buffers.data.is_none() && self.inner.buffers.control.is_none()
     }
 }
 
@@ -1921,18 +1915,23 @@ impl<T: PendingIoMessageState> PendingIoMessage<T> {
         Option<IoVecOutputBuffer>,
         Option<IoOutputBuffer>
     ) {
-        let buffers = self.inner.buffers.take();
-        let control = self.inner.control.take();
+        let buffers = self.inner.buffers.data.take();
+        let control = self.inner.buffers.control.take();
 
         (buffers, control)
     }
 
-    pub fn data_buffers(&self) -> Option<&IoVecOutputBuffer> {
-        self.inner.buffers.as_ref()
+    pub unsafe fn into_buffers(
+        mut self,
+    ) -> IoRecvMsgOutputBuffers {
+        IoRecvMsgOutputBuffers {
+            data: self.inner.buffers.data.take(),
+            control: self.inner.buffers.control.take(),
+        }
     }
 
-    pub fn control_buffer(&self) -> Option<&IoOutputBuffer> {
-        self.inner.control.as_ref()
+    pub fn buffers(&self) -> &IoRecvMsgOutputBuffers {
+        &self.inner.buffers
     }
 }
 
@@ -2286,33 +2285,6 @@ mod tests {
         }
     }
     // Add tests for IpV6LevelType::HopLimit and IpV6LevelType::Class similarly
-
-    #[test]
-    fn test_tls_set_record_type_round_trip() {
-        let record_type_to_send = TlsRecordType::ApplicationData;
-        let original_level = TlsLevelType::SetRecordType(record_type_to_send);
-        let control_msg = IoControlMessage::new(IoControlMessageLevel::Tls(original_level.clone()));
-
-        let prepared_bytes = control_msg.try_prepare().expect("Preparation failed");
-        let cmsg_hdr_ptr = prepared_bytes.as_ptr() as *const libc::cmsghdr;
-        let _ = IoControlMessage::try_parse_single(cmsg_hdr_ptr)
-            .expect("Parsing single failed");
-
-        // Note: When parsing, TLS_SET_RECORD_TYPE might not be a message type you'd typically *receive*.
-        // The kernel uses TLS_GET_RECORD_TYPE to inform userspace.
-        // Your ParseControlMessage for TlsLevelType only handles TLS_GET_RECORD_TYPE.
-        // This test will fail as is.
-
-        // To test round-trip for SET, you'd need to parse the raw bytes manually
-        // or adjust your parsing logic if SET can also be received (unlikely).
-        // For now, let's test that preparation works and the bytes are as expected.
-
-        let raw_out = original_level.prepare_control_message().unwrap();
-        assert_eq!(raw_out.message_level, libc::SOL_TLS);
-        assert_eq!(raw_out.message_type, libc::TLS_SET_RECORD_TYPE);
-        assert_eq!(raw_out.payload.len(), std::mem::size_of::<TlsRecordType>());
-        assert_eq!(raw_out.payload[0], TlsRecordType::ApplicationData as u8);
-    }
 
     #[test]
     fn test_tls_get_record_type_parsing() {

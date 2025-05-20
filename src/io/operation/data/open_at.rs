@@ -333,7 +333,7 @@ impl super::CompletableOperation for IoOpenAtData {
 
         let path = self.path.take().map(|p| {
             Bytes::from(p.into_bytes())
-        }).unwrap_or({
+        }).unwrap_or_else(|| {
             warn!("cl-async: openat(): Expected path but got None; returning empty bytes.");
             Bytes::new()
         });

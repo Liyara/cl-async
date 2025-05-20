@@ -540,7 +540,7 @@ impl Worker {
 
             match poller.poll_events(
                 &mut events, 
-                Some(100)
+                None
             ) { 
                 Ok(()) => {},
                 Err(EventPollerError::FailedToPollEvents { source }) => {

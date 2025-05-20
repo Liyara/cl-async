@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use enum_dispatch::enum_dispatch;
 use crate::{net::PeerAddress, OsError};
 use crate::Key;
-use super::IoCompletion;
+use super::{buffers::{IoRecvMsgOutputBuffers, RecvMsgBuffersRefs}, IoBytesMutRecovery, IoBytesMutVecRecovery, IoCompletion, IoRecvMessageRecovery, OutputBufferVecSubmissionError, RecvMsgBuffers};
 use super::IoFailure;
 use data::{AsUringEntry, CompletableOperation};
 use super::{buffers::{IoVecInputBuffer, IoVecOutputBuffer}, message::IoSendMessage, IoCompletionResult, IoInputBuffer, IoOutputBuffer, IoSubmissionError};
@@ -70,6 +70,61 @@ impl fmt::Debug for IoType {
             IoType::Timeout(_) => write!(f, "IoType:Timeout"),
             IoType::AcceptMulti(_) => write!(f, "IoOperation:AcceptMulti"),
             IoType::Fdatasync(_) => write!(f, "IoType::Fdatasync"),
+        }
+    }
+}
+
+impl IoBytesMutRecovery for IoType {
+    fn as_bytes_mut(&self) -> Option<&BytesMut> {
+        match self {
+            IoType::Read(data) => data.as_bytes_mut(),
+            IoType::Recv(data) => data.as_bytes_mut(),
+            IoType::RecvMsg(data) => data.as_bytes_mut(),
+            _ => None,
+        }
+    }
+
+    fn into_bytes_mut(self) -> Option<BytesMut> {
+        match self {
+            IoType::Read(data) => data.into_bytes_mut(),
+            IoType::Recv(data) => data.into_bytes_mut(),
+            IoType::RecvMsg(data) => data.into_bytes_mut(),
+            _ => None,
+        }
+    }
+}
+    
+
+impl IoBytesMutVecRecovery for IoType {
+    fn as_vec(&self) -> Option<&Vec<BytesMut>> {
+        match self {
+            IoType::Readv(data) => data.as_vec(),
+            IoType::RecvMsg(data) => data.as_vec(),
+            _ => None,
+        }
+    }
+
+    fn into_vec(self) -> Option<Vec<BytesMut>> {
+        match self {
+            IoType::Readv(data) => data.into_vec(),
+            IoType::RecvMsg(data) => data.into_vec(),
+            _ => None,
+        }  
+    }
+}
+
+impl IoRecvMessageRecovery for IoType {
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs<'_>> {
+        match self {
+            IoType::RecvMsg(data) => data.as_recvmsg_buffers(),
+            _ => None,
+        }
+    }
+
+    fn into_recvmsg_buffers(self) -> Option<RecvMsgBuffers> {
+        match self {
+            IoType::RecvMsg(data) => data.into_recvmsg_buffers(),
+            _ => None,
         }
     }
 }
@@ -160,7 +215,9 @@ impl IoOperation {
         Self::readv_at_into(
             fd, 
             offset, 
-            IoVecOutputBuffer::new(buffers)?
+            IoVecOutputBuffer::new(buffers)
+                .map_err(OutputBufferVecSubmissionError::from)
+            ?
         )
     }
 
@@ -193,12 +250,12 @@ impl IoOperation {
         flags: data::IoRecvMsgInputFlags,
     ) -> Result<Self, IoSubmissionError> {
 
-        let buffers = if buffer_lengths.len() > 0 {Some(
+        let data = if buffer_lengths.len() > 0 {Some(
                 IoVecOutputBuffer::new(
                 buffer_lengths.into_iter()
                     .map(|len| BytesMut::with_capacity(len))
                     .collect::<Vec<_>>()
-            )?
+            ).map_err(OutputBufferVecSubmissionError::from)?
         )} else { None };
 
         let control = if control_length > 0 {
@@ -209,23 +266,23 @@ impl IoOperation {
 
         Self::recv_msg_into(
             fd,
-            buffers,
-            control,
+            IoRecvMsgOutputBuffers {
+                data,
+                control,
+            },
             flags,
         )
     }
 
     pub fn recv_msg_into<T: AsRawFd>(
         fd: &T,
-        buffers: Option<IoVecOutputBuffer>,
-        control: Option<IoOutputBuffer>,
+        buffers: IoRecvMsgOutputBuffers,
         flags: data::IoRecvMsgInputFlags,
     ) -> Result<Self, IoSubmissionError> {
         Ok(Self {
             fd: fd.as_raw_fd(),
             t: IoType::RecvMsg(data::IoRecvMsgData::new(
                 buffers,
-                control,
                 flags,
             )?),
             duration: IoDuration::Single,
@@ -631,5 +688,35 @@ impl IoOperation {
 impl AsRawFd for IoOperation {
     fn as_raw_fd(&self) -> RawFd {
         self.fd
+    }
+}
+
+impl IoBytesMutRecovery for IoOperation {
+    fn as_bytes_mut(&self) -> Option<&BytesMut> {
+        self.t.as_bytes_mut()
+    }
+
+    fn into_bytes_mut(self) -> Option<BytesMut> {
+        self.t.into_bytes_mut()
+    }
+}
+
+impl IoBytesMutVecRecovery for IoOperation {
+    fn as_vec(&self) -> Option<&Vec<BytesMut>> {
+        self.t.as_vec()
+    }
+
+    fn into_vec(self) -> Option<Vec<BytesMut>> {
+        self.t.into_vec()
+    }
+}
+
+impl IoRecvMessageRecovery for IoOperation {
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs<'_>> {
+        self.t.as_recvmsg_buffers()
+    }
+
+    fn into_recvmsg_buffers(self) -> Option<RecvMsgBuffers> {
+        self.t.into_recvmsg_buffers()
     }
 }

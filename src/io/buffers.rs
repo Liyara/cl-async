@@ -2,8 +2,6 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use once_cell::sync::Lazy;
 use thiserror::Error;
 
-use super::IoSubmissionError;
-
 const DEFAULT_IOV_MAX: usize = 1024;
 
 static IOV_MAX_LIMIT: Lazy<usize> = Lazy::new(|| {
@@ -33,15 +31,62 @@ static IOV_MAX_LIMIT: Lazy<usize> = Lazy::new(|| {
 
 });
 
-fn assert_iovecs_valid(iovecs: &[libc::iovec]) -> Result<(), IoSubmissionError> {
+#[derive(Debug, Error)]
+pub enum InvalidIoVecError {
+    #[error("The generated iovec set is empty (no memory to read into / no data to write from).")]
+    NoDataForIoVecs,
+
+    #[error("The generated iovec is too large: requested {requested} iovecs, but the maximum is {max}.")]
+    TooManyIoVecs {
+        requested: usize,
+        max: usize,
+    },
+}
+
+fn assert_iovecs_valid(iovecs: &[libc::iovec]) -> Result<(), InvalidIoVecError> {
     if iovecs.is_empty() {
-        Err(IoSubmissionError::NoWritableMemory)
+        Err(InvalidIoVecError::NoDataForIoVecs)
     } else if iovecs.len() > *IOV_MAX_LIMIT {
-        Err(IoSubmissionError::TooManyIoVecs {
+        Err(InvalidIoVecError::TooManyIoVecs {
             requested: iovecs.len(),
             max: *IOV_MAX_LIMIT,
         })
     } else { Ok(()) }
+}
+
+#[derive(Debug, Error)]
+pub enum InvalidIoInputBufferErrorKind {
+    #[error("The input buffer is empty.")]
+    EmptyInputBuffer,
+
+    #[error("The input buffer is non-contiguous. Use IoVecInputBuffer instead.")]
+    NonContiguousInputBuffer,
+}
+
+#[derive(Debug, Error)]
+#[error("Invalid input buffer: {kind}")]
+pub struct InvalidIoInputBufferError {
+
+    pub buffer: Bytes,
+
+    #[source]
+    pub kind: InvalidIoInputBufferErrorKind,
+}
+
+impl InvalidIoInputBufferError {
+    pub fn empty_buffer(buffer: Bytes) -> Self {
+        Self {
+            buffer,
+            kind: InvalidIoInputBufferErrorKind::EmptyInputBuffer,
+        }
+    }
+
+    pub fn non_contiguous_buffer(buffer: Bytes) -> Self {
+        Self {
+            buffer,
+            kind: InvalidIoInputBufferErrorKind::NonContiguousInputBuffer,
+        }
+    }
 }
 
 // INPUT BUFFER
@@ -50,11 +95,11 @@ fn assert_iovecs_valid(iovecs: &[libc::iovec]) -> Result<(), IoSubmissionError> 
 pub struct IoInputBuffer(Bytes);
 
 impl IoInputBuffer {
-    pub fn new(data: Bytes) -> Result<Self, IoSubmissionError> {
+    pub fn new(data: Bytes) -> Result<Self, InvalidIoInputBufferError> {
 
         // Writing empty data is incoherent
         if data.is_empty() { 
-            return Err(IoSubmissionError::EmptyInputBuffer(data)); 
+            return Err(InvalidIoInputBufferError::empty_buffer(data));
         }
 
         /* 
@@ -64,7 +109,7 @@ impl IoInputBuffer {
         
         */
         if data.chunk().len() != data.len() {
-            return Err(IoSubmissionError::NonContiguousInputBuffer(data));
+            return Err(InvalidIoInputBufferError::non_contiguous_buffer(data));
         }
 
         Ok(Self(data))
@@ -111,6 +156,12 @@ impl IoOutputBufferIntoBytesError {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("The output buffer is empty.")]
+pub struct EmptyIoOutputBufferError {
+    pub buffer: BytesMut,
+}
+
 #[derive(Debug)]
 // Represents a contiguous, mutable buffer for reading into.
 pub struct IoOutputBuffer(BytesMut);
@@ -121,11 +172,11 @@ impl IoOutputBuffer {
         Self(BytesMut::with_capacity(capacity))
     }
     
-    pub fn new(data: BytesMut) -> Result<Self, IoSubmissionError> {
+    pub fn new(data: BytesMut) -> Result<Self, EmptyIoOutputBufferError> {
 
         // There must be some space to write into
         if data.capacity() == 0 {
-            return Err(IoSubmissionError::EmptyOutputBuffer(data));
+            return Err(EmptyIoOutputBufferError { buffer: data });
         }
 
         Ok(Self(data))
@@ -166,7 +217,7 @@ impl IoOutputBuffer {
 
 
 pub trait GenerateIoVecs {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoSubmissionError>;
+    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError>;
 }
 
 #[derive(Debug)]
@@ -175,23 +226,35 @@ pub enum IoVecInputSource {
     Multiple(Vec<Bytes>),
 }
 
+#[derive(Debug, Error)]
+#[error("The input buffer is empty.")]
+pub struct EmptySingleVectoredInputBufferError {
+    pub buffer: Bytes,
+}
+
+#[derive(Debug, Error)]
+#[error("The input buffer is empty.")]
+pub struct EmptyVectoredInputBufferError {
+    pub buffer: Vec<Bytes>,
+}
+
 #[derive(Debug)]
 // Represents a non-contiguous, immutable buffer for writing from.
 pub struct IoVecInputBuffer(IoVecInputSource);
 
 impl IoVecInputBuffer {
 
-    pub fn new_single(data: Bytes) -> Result<Self, IoSubmissionError> {
+    pub fn new_single(data: Bytes) -> Result<Self, EmptySingleVectoredInputBufferError> {
         if data.is_empty() {
-            return Err(IoSubmissionError::EmptyInputBuffer(data));
+            return Err(EmptySingleVectoredInputBufferError { buffer: data });
         }
 
         Ok(Self(IoVecInputSource::Single(data)))
     }
 
-    pub fn new_multiple(data: Vec<Bytes>) -> Result<Self, IoSubmissionError> {
+    pub fn new_multiple(data: Vec<Bytes>) -> Result<Self, EmptyVectoredInputBufferError> {
         if data.is_empty() {
-            return Err(IoSubmissionError::EmptyVectoredInputBuffer(data));
+            return Err(EmptyVectoredInputBufferError { buffer: data });
         }
 
         Ok(Self(IoVecInputSource::Multiple(data)))
@@ -204,10 +267,82 @@ impl IoVecInputBuffer {
     pub fn as_source(&self) -> &IoVecInputSource {
         &self.0
     }
+
+    /*
+        SAFETY: The caller must ensure that the source type is `Single`.
+    */
+    pub unsafe fn as_bytes(&self) -> &Bytes {
+        match &self.0 {
+            IoVecInputSource::Single(bytes) => bytes,
+            IoVecInputSource::Multiple(_) => {
+                panic!("Expected a single buffer, but got multiple.");
+            }
+        }
+    }
+
+    /*
+        SAFETY: The caller must ensure that the source type is `Single`.
+    */
+    pub unsafe fn as_mut_bytes(&mut self) -> &mut Bytes {
+        match &mut self.0 {
+            IoVecInputSource::Single(bytes) => bytes,
+            IoVecInputSource::Multiple(_) => {
+                panic!("Expected a single buffer, but got multiple.");
+            }
+        }
+    }
+
+    /*
+        SAFETY: The caller must ensure that the source type is `Single`.
+    */
+    pub unsafe fn into_bytes(self) -> Bytes {
+        match self.0 {
+            IoVecInputSource::Single(bytes) => bytes,
+            IoVecInputSource::Multiple(_) => {
+                panic!("Expected a single buffer, but got multiple.");
+            }
+        }
+    }
+
+    /*
+        SAFETY: The caller must ensure that the source type is `Multiple`.
+    */
+    pub unsafe fn as_vec(&self) -> &Vec<Bytes> {
+        match &self.0 {
+            IoVecInputSource::Single(_) => {
+                panic!("Expected multiple buffers, but got a single one.");
+            }
+            IoVecInputSource::Multiple(vec) => vec,
+        }
+    }
+
+    /*
+        SAFETY: The caller must ensure that the source type is `Multiple`.
+    */
+    pub unsafe fn as_mut_vec(&mut self) -> &mut Vec<Bytes> {
+        match &mut self.0 {
+            IoVecInputSource::Single(_) => {
+                panic!("Expected multiple buffers, but got a single one.");
+            }
+            IoVecInputSource::Multiple(vec) => vec,
+        }
+    }
+
+    /*
+        SAFETY: The caller must ensure that the source type is `Multiple`.
+    */
+    pub unsafe fn into_vec(self) -> Vec<Bytes> {
+        match self.0 {
+            IoVecInputSource::Single(_) => {
+                panic!("Expected multiple buffers, but got a single one.");
+            }
+            IoVecInputSource::Multiple(vec) => vec,
+        }
+    }
 }
 
 impl GenerateIoVecs for IoVecInputBuffer {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoSubmissionError> {
+    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         match self.0 {
             IoVecInputSource::Single(ref mut bytes) => {
                 unsafe { Ok(bytes.generate_iovecs()?) }
@@ -216,6 +351,138 @@ impl GenerateIoVecs for IoVecInputBuffer {
                 unsafe { Ok(vec.generate_iovecs()?) }
             },
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct RecvMsgBuffers {
+    data: Option<Vec<BytesMut>>,
+    control: Option<BytesMut>,
+}
+
+impl Default for RecvMsgBuffers {
+    fn default() -> Self {
+        Self {
+            data: None,
+            control: None,
+        }
+    }
+}
+
+impl RecvMsgBuffers {
+    pub fn new(data: Option<Vec<BytesMut>>, control: Option<BytesMut>) -> Self {
+        Self {
+            data,
+            control,
+        }
+    }
+
+    pub fn data(&self) -> Option<&Vec<BytesMut>> {
+        self.data.as_ref()
+    }
+
+    pub fn data_mut(&mut self) -> Option<&mut Vec<BytesMut>> {
+        self.data.as_mut()
+    }
+
+    pub fn control(&self) -> Option<&BytesMut> {
+        self.control.as_ref()
+    }
+
+    pub fn control_mut(&mut self) -> Option<&mut BytesMut> {
+        self.control.as_mut()
+    }
+
+    pub fn take_data(&mut self) -> Option<Vec<BytesMut>> {
+        self.data.take()
+    }
+
+    pub fn take_control(&mut self) -> Option<BytesMut> {
+        self.control.take()
+    }
+
+    pub fn add_data(&mut self, data: BytesMut) {
+        if self.data.is_none() {
+            self.data = Some(vec![data]);
+        } else {
+            self.data.as_mut().unwrap().push(data);
+        }
+    }
+
+    pub fn extend_data(&mut self, data: Vec<BytesMut>) {
+        if self.data.is_none() {
+            self.data = Some(data);
+        } else {
+            self.data.as_mut().unwrap().extend(data);
+        }
+    }
+
+    pub fn set_control(&mut self, control: BytesMut) {
+        self.control = Some(control);
+    }
+
+    pub fn clear_data(&mut self) {
+        self.data = None;
+    }
+
+    pub fn clear_control(&mut self) {
+        self.control = None;
+    }
+
+    pub fn split(mut self) -> (Option<Vec<BytesMut>>, Option<BytesMut>) {
+        let data = self.data.take();
+        let control = self.control.take();
+        (data, control)
+    }
+
+    pub (crate) fn prepare(self) -> Result<IoRecvMsgOutputBuffers, RecvMsgSubmissionError> {
+
+        let data = match self.data {
+            Some(data) => {
+                match IoVecOutputBuffer::new(data) {
+                    Ok(data) => Some(data),
+                    Err(e) => {
+                        let e_str = e.to_string();
+                        return Err(RecvMsgSubmissionError {
+                            buffers: RecvMsgBuffers {
+                                data: Some(e.buffer),
+                                control: self.control,
+                            },
+                            kind: RecvMsgSubmissionErrorKind::InvalidDataBuffer(e_str),
+                        });
+                    }
+                }
+            },
+            None => None,
+        };
+
+        let control = match self.control {
+            Some(control) => {
+                match IoOutputBuffer::new(control) {
+                    Ok(control) => Some(control),
+                    Err(e) => {
+                        let e_str = e.to_string();
+                        return Err(RecvMsgSubmissionError {
+                            buffers: RecvMsgBuffers {
+                                data: data.map(|d| d.into_vec()),
+                                control: Some(e.buffer),
+                            },
+                            kind: RecvMsgSubmissionErrorKind::InvalidControlBuffer(e_str),
+                        });
+                    }
+                }
+            },
+            None => None,
+        };
+
+        Ok(IoRecvMsgOutputBuffers {
+            data,
+            control,
+        })
+    }
+
+    pub fn refs(&self) -> RecvMsgBuffersRefs {
+        RecvMsgBuffersRefs::new(self.data.as_ref(), self.control.as_ref())
     }
 }
 
@@ -240,8 +507,49 @@ fn generate_iovecs_single(mut bytes: Bytes) -> Vec<libc::iovec> {
     iovecs
 }
 
+pub struct RecvMsgBuffersRefs<'a> {
+    data: Option<&'a Vec<BytesMut>>,
+    control: Option<&'a BytesMut>,
+}
+
+impl<'a> RecvMsgBuffersRefs<'a> {
+    pub fn new(data: Option<&'a Vec<BytesMut>>, control: Option<&'a BytesMut>) -> Self {
+        Self { data, control }
+    }
+
+    pub fn data(&self) -> Option<&'a Vec<BytesMut>> {
+        self.data
+    }
+
+    pub fn control(&self) -> Option<&'a BytesMut> {
+        self.control
+    }
+}
+
+#[derive(Debug)]
+pub struct IoRecvMsgOutputBuffers {
+    pub data: Option<IoVecOutputBuffer>,
+    pub control: Option<IoOutputBuffer>,
+}
+
+impl IoRecvMsgOutputBuffers {
+
+    pub fn as_raw(&self) -> RecvMsgBuffersRefs {
+        let data = self.data.as_ref().map(|b| b.as_vec());
+        let control = self.control.as_ref().map(|b| b.as_bytes());
+        RecvMsgBuffersRefs::new(data, control)
+    }
+
+    pub fn unwrap(self) -> RecvMsgBuffers {
+        RecvMsgBuffers {
+            data: self.data.map(|b| b.into_vec()),
+            control: self.control.map(|b| b.into_bytes_unchecked()),
+        }
+    }
+}
+
 impl GenerateIoVecs for Bytes {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoSubmissionError> {
+    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         let iovecs = generate_iovecs_single(self.clone());
         assert_iovecs_valid(&iovecs)?;
         Ok(iovecs)
@@ -249,12 +557,33 @@ impl GenerateIoVecs for Bytes {
 }
 
 impl GenerateIoVecs for Vec<Bytes> {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoSubmissionError> {
+    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         let mut iovecs = Vec::new();
         for bytes in self.iter_mut() {
             let iovecs_single = generate_iovecs_single(bytes.clone());
             if iovecs_single.is_empty() { continue; }
             iovecs.extend(iovecs_single);
+        }
+        assert_iovecs_valid(&iovecs)?;
+        Ok(iovecs)
+    }
+}
+
+impl GenerateIoVecs for Vec<BytesMut> {
+    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+        let mut iovecs = Vec::new();
+        for bytes in self.iter_mut() {
+            let chunk = bytes.chunk_mut();
+            let len = chunk.len();
+
+            if len == 0 { continue; }
+
+            let iovec = libc::iovec {
+                iov_base: chunk.as_mut_ptr() as *mut libc::c_void,
+                iov_len: len,
+            };
+
+            iovecs.push(iovec);
         }
         assert_iovecs_valid(&iovecs)?;
         Ok(iovecs)
@@ -286,16 +615,22 @@ impl IoVecOutputBufferIntoBytesError {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("The output buffer is empty.")]
+pub struct EmptyVectoredOutputBufferError {
+    pub buffer: Vec<BytesMut>,
+}
+
 #[derive(Debug)]
 // Represents a non-contiguous, mutable buffer for reading into.
 pub struct IoVecOutputBuffer(Vec<BytesMut>);
 
 impl IoVecOutputBuffer {
-    pub fn new(data: Vec<BytesMut>) -> Result<Self, IoSubmissionError> {
+    pub fn new(data: Vec<BytesMut>) -> Result<Self, EmptyVectoredOutputBufferError> {
 
         // There must be some space to write into
         if data.is_empty() {
-            return Err(IoSubmissionError::EmptyVectoredOutputBuffer(data));
+            return Err(EmptyVectoredOutputBufferError { buffer: data });
         }
 
         Ok(Self(data))
@@ -341,25 +676,176 @@ impl IoVecOutputBuffer {
 }
 
 impl GenerateIoVecs for IoVecOutputBuffer {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, IoSubmissionError> {
-        let mut iovecs = Vec::with_capacity(self.0.len());
+    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+        unsafe { self.0.generate_iovecs() }
+    }
+}
 
-        for buffer in &mut self.0 {
-            let chunk = buffer.chunk_mut();
-            let len = chunk.len();
+// Submission errors where the input is a Bytes
+#[derive(Debug, Error)]
+pub enum InputBufferSubmissionError {
+    #[error("Invalid continguous input buffer: {0}")]
+    InvalidInputBuffer(#[from] InvalidIoInputBufferError),
 
-            if len == 0 { continue; }
+    #[error("Invalid non-contiguous input buffer: {0}")]
+    InvalidIoVecInputBuffer(#[from] EmptySingleVectoredInputBufferError),
 
-            let iovec = libc::iovec {
-                iov_base: chunk.as_mut_ptr() as *mut libc::c_void,
-                iov_len: len,
-            };
+    #[error("The provided input buffers generated an invalid iovec: {source}")]
+    InvalidIoVec {
 
-            iovecs.push(iovec);
+        buffer: Bytes,
+
+        #[source]
+        source: InvalidIoVecError,
+    }
+}
+
+impl InputBufferSubmissionError {
+
+    pub fn as_buffer(&self) -> &Bytes {
+        match self {
+            InputBufferSubmissionError::InvalidInputBuffer(e) => &e.buffer,
+            InputBufferSubmissionError::InvalidIoVecInputBuffer(e) => &e.buffer,
+            InputBufferSubmissionError::InvalidIoVec { buffer, .. } => buffer,
         }
+    }
 
-        assert_iovecs_valid(&iovecs)?;
+    pub fn into_buffer(self) -> Bytes {
+        match self {
+            InputBufferSubmissionError::InvalidInputBuffer(e) => e.buffer,
+            InputBufferSubmissionError::InvalidIoVecInputBuffer(e) => e.buffer,
+            InputBufferSubmissionError::InvalidIoVec { buffer, .. } => buffer,
+        }
+    }
+}
 
-        Ok(iovecs)
+// Submission errors where the input is a Vec<Bytes>
+#[derive(Debug, Error)]
+pub enum InputBufferVecSubmissionError {
+    #[error("Invalid input buffer array: {0}")]
+    InvalidIoVecInputBuffer(#[from] EmptyVectoredInputBufferError),
+
+    #[error("The provided input buffers generated an invalid iovec: {source}")]
+    InvalidIoVec {
+
+        buffer: Vec<Bytes>,
+
+        #[source]
+        source: InvalidIoVecError,
+    }
+}
+
+impl InputBufferVecSubmissionError {
+
+    pub fn as_buffers(&self) -> &Vec<Bytes> {
+        match self {
+            InputBufferVecSubmissionError::InvalidIoVecInputBuffer(e) => &e.buffer,
+            InputBufferVecSubmissionError::InvalidIoVec { buffer, .. } => buffer,
+        }
+    }
+
+    pub fn into_buffers(self) -> Vec<Bytes> {
+        match self {
+            InputBufferVecSubmissionError::InvalidIoVecInputBuffer(e) => e.buffer,
+            InputBufferVecSubmissionError::InvalidIoVec { buffer, .. } => buffer,
+        }
+    }
+}
+
+// Submission errors where the output is a BytesMut
+#[derive(Debug, Error)]
+pub enum OutputBufferSubmissionError {
+    #[error("Invalid continguous output buffer: {0}")]
+    InvalidOutputBuffer(#[from] EmptyIoOutputBufferError),
+
+    #[error("The provided output buffers generated an invalid iovec: {source}")]
+    InvalidIoVec {
+
+        buffer: BytesMut,
+
+        #[source]
+        source: InvalidIoVecError,
+    }
+}
+
+impl OutputBufferSubmissionError {
+
+    pub fn as_buffer(&self) -> &BytesMut {
+        match self {
+            OutputBufferSubmissionError::InvalidOutputBuffer(e) => &e.buffer,
+            OutputBufferSubmissionError::InvalidIoVec { buffer, .. } => buffer,
+        }
+    }
+
+    pub fn into_buffer(self) -> BytesMut {
+        match self {
+            OutputBufferSubmissionError::InvalidOutputBuffer(e) => e.buffer,
+            OutputBufferSubmissionError::InvalidIoVec { buffer, .. } => buffer,
+        }
+    }
+}
+
+// Submission errors where the output is a Vec<BytesMut>
+#[derive(Debug, Error)]
+pub enum OutputBufferVecSubmissionError {
+    #[error("Invalid output buffer array: {0}")]
+    InvalidOutputBuffer(#[from] EmptyVectoredOutputBufferError),
+
+    #[error("The provided output buffers generated an invalid iovec: {source}")]
+    InvalidIoVec {
+
+        buffer: Vec<BytesMut>,
+
+        #[source]
+        source: InvalidIoVecError,
+    }
+}
+
+impl OutputBufferVecSubmissionError {
+
+    pub fn as_buffers(&self) -> &Vec<BytesMut> {
+        match self {
+            OutputBufferVecSubmissionError::InvalidOutputBuffer(e) => &e.buffer,
+            OutputBufferVecSubmissionError::InvalidIoVec { buffer, .. } => buffer,
+        }
+    }
+
+    pub fn into_buffers(self) -> Vec<BytesMut> {
+        match self {
+            OutputBufferVecSubmissionError::InvalidOutputBuffer(e) => e.buffer,
+            OutputBufferVecSubmissionError::InvalidIoVec { buffer, .. } => buffer,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum RecvMsgSubmissionErrorKind {
+    #[error("Invalid data buffer: {0}")]
+    InvalidDataBuffer(String),
+
+    #[error("Invalid control buffer: {0}")]
+    InvalidControlBuffer(String),
+
+    #[error("Failed to generate iovecs for data buffer: {0}")]
+    InvalidIoVec(#[source] InvalidIoVecError),
+}
+
+#[derive(Debug, Error)]
+#[error("Failed to submit recvmsg buffers: {kind}")]
+pub struct RecvMsgSubmissionError {
+    
+    pub buffers: RecvMsgBuffers,
+
+    #[source]
+    pub kind: RecvMsgSubmissionErrorKind,
+}
+
+impl RecvMsgSubmissionError {
+    pub fn as_buffers(&self) -> &RecvMsgBuffers {
+        &self.buffers
+    }
+
+    pub fn into_buffers(self) -> RecvMsgBuffers {
+        self.buffers
     }
 }

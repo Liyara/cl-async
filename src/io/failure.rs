@@ -3,6 +3,8 @@
 pub mod data {
     use bytes::BytesMut;
 
+    use crate::io::RecvMsgBuffers;
+
     #[derive(Debug)]
     pub struct IoReadFailure {
         pub buffer: BytesMut
@@ -15,8 +17,7 @@ pub mod data {
 
     #[derive(Debug)]
     pub struct IoMsgFailure {
-        pub data_buffers: Option<Vec<BytesMut>>,
-        pub control_buffer: Option<BytesMut>,
+        pub buffers: RecvMsgBuffers,
     }
 }
 

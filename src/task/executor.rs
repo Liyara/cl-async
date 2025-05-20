@@ -1,5 +1,4 @@
 use rustc_hash::FxHashMap;
-use thiserror::Error;
 use crate::worker::WorkSender;
 
 use super::{
@@ -7,9 +6,6 @@ use super::{
     TaskId,
     TaskWaker
 };
-
-#[derive(Debug, Error)]
-pub enum ExecutorError {}
 
 pub struct Executor {
     ready_tasks: crossbeam_deque::Worker<Task>,

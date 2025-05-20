@@ -64,9 +64,15 @@ impl SpawnTaskError {
 }
 
 #[derive(Debug, Error)]
-pub enum WorkerDispatchError {
-    #[error("Failed to find suitable worker: {0}")]
-    FailedToFindWorker(#[from] NextWorkerError),
+pub enum WorkerDispatchError<T> {
+    #[error("Failed to find suitable worker: {source}")]
+    FailedToFindWorker {
+
+        payload: T,
+
+        #[source] 
+        source: NextWorkerError
+    },
 
     #[error("Failed to send task to worker: {0}")]
     FailedToSendMessage(#[from] SendToWorkerChannelError),
@@ -87,8 +93,11 @@ pub enum PoolError {
     #[error("Failed to start pool: {0}")]
     StartError(#[from] PoolStartError),
 
-    #[error("Failed to dispatch message to worker: {0}")]
-    DispatchError(#[from] WorkerDispatchError),
+    #[error("Failed to dispatch IO operation to worker: {0}")]
+    IoDispatchError(#[from] WorkerDispatchError<IoOperation>),
+
+    #[error("Failed to dispatch event source listen registration: {0}")]
+    EventSourceDispatchError(#[from] WorkerDispatchError<EventSource>),
 
     #[error("Failed to spawn task: {0}")]
     SpawnError(#[from] SpawnTaskError),
@@ -176,14 +185,20 @@ impl ThreadPool {
         source: EventSource,
         interest_type: InterestType,
         handler: F
-    ) -> Result<(), WorkerDispatchError>
+    ) -> Result<(), WorkerDispatchError<EventSource>>
     where
         F: FnOnce(crate::events::EventReceiver) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static
     {
         info!("cl-async: Registering event source {}", source);
 
-        let worker = self.get_next_worker()?;
+        let worker = self.get_next_worker()
+            .map_err(|e| WorkerDispatchError::FailedToFindWorker {
+                payload: source,
+                source: e
+            })
+        ?;
+
         let event_registry = worker.event_registry().clone();
         let event_queue_registry = worker.queue_registry().clone();
 
@@ -220,8 +235,16 @@ impl ThreadPool {
         &'static self,
         operation: IoOperation, 
         waker: Option<std::task::Waker>
-    ) -> Result<WorkerIOSubmissionHandle, WorkerDispatchError> {
-        let worker = self.get_next_worker()?;
+    ) -> Result<WorkerIOSubmissionHandle, WorkerDispatchError<IoOperation>> {
+
+        let worker = match self.get_next_worker() {
+            Ok(worker) => worker,
+            Err(e) => return Err(WorkerDispatchError::FailedToFindWorker {
+                payload: operation,
+                source: e
+            })
+        };
+
         info!("cl-async: Submitting IO operation to worker {}", worker.id());
         Ok(worker.submit_io_operation(operation, waker)?)
     }

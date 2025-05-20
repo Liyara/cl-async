@@ -1,4 +1,6 @@
-use crate::io::{buffers::IoVecOutputBuffer, failure::{data::IoMultiReadFailure, IoFailure}, GenerateIoVecs, IoSubmissionError};
+use bytes::BytesMut;
+
+use crate::io::{buffers::IoVecOutputBuffer, failure::{data::IoMultiReadFailure, IoFailure}, GenerateIoVecs, IoBytesMutVecRecovery, IoSubmissionError};
 
 struct IoReadvDataInner {
     iovec: Option<IoVecOutputBuffer>,
@@ -56,7 +58,7 @@ impl super::CompletableOperation for IoReadvData {
                     e.into_buffers()
                 }
             }
-        }).unwrap_or({
+        }).unwrap_or_else(|| {
             warn!("cl-async: readv(): Expected buffer but got None; returning empty buffer vec.");
             Vec::new()
         });
@@ -71,7 +73,7 @@ impl super::CompletableOperation for IoReadvData {
         IoFailure::MultiRead(IoMultiReadFailure {
             buffers: self.inner.iovec.take().map(|b| {
                 b.into_vec()
-            }).unwrap_or({
+            }).unwrap_or_else(|| {
                 warn!("cl-async: readv(): Expected buffer but got None; returning empty buffer vec.");
                 Vec::new()
             }),
@@ -88,5 +90,19 @@ impl super::AsUringEntry for IoReadvData {
             inner._iovec_ptr.len() as u32,
         ).offset(self.offset as u64)
         .build().user_data(key.as_u64())
+    }
+}
+
+impl IoBytesMutVecRecovery for IoReadvData {
+    fn as_vec(&self) -> Option<&Vec<BytesMut>> {
+        self.inner.iovec.as_ref().map(|b| {
+            b.as_vec()
+        })
+    }
+
+    fn into_vec(mut self) -> Option<Vec<BytesMut>> {
+        self.inner.iovec.take().map(|b| {
+            b.into_vec()
+        })
     }
 }

@@ -1,7 +1,8 @@
 use std::os::fd::RawFd;
 use bitflags::bitflags;
+use bytes::BytesMut;
 
-use crate::{io::{buffers::IoVecOutputBuffer, message::{IoRecvMessage, PendingIoMessage}, IoOutputBuffer, IoSubmissionError}, Key};
+use crate::{io::{buffers::{IoRecvMsgOutputBuffers, RecvMsgBuffersRefs}, message::{IoRecvMessage, PendingIoMessage}, IoBytesMutRecovery, IoBytesMutVecRecovery, IoRecvMessageRecovery, IoSubmissionError, RecvMsgBuffers}, Key};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,8 +32,7 @@ pub struct IoRecvMsgData {
 
 impl IoRecvMsgData {
     pub fn new(
-        buffers: Option<IoVecOutputBuffer>,
-        control: Option<IoOutputBuffer>,
+        buffers: IoRecvMsgOutputBuffers,
         flags: IoRecvMsgInputFlags,
     ) -> Result<Self, IoSubmissionError> {
 
@@ -41,7 +41,6 @@ impl IoRecvMsgData {
                 flags,
                 pending_msg: Some(PendingIoMessage::new(
                     buffers,
-                    control,
                 )?),
             }
         )
@@ -56,8 +55,7 @@ impl super::CompletableOperation for IoRecvMsgData {
             return crate::io::IoCompletion::Msg(
                 crate::io::completion_data::IoMsgCompletion {
                     msg: IoRecvMessage::new(
-                        None,
-                        None,
+                        RecvMsgBuffers::default(),
                         None,
                         None,
                         IoRecvMsgOutputFlags::empty(),
@@ -113,8 +111,10 @@ impl super::CompletableOperation for IoRecvMsgData {
         };
 
         let msg = IoRecvMessage::new(
-            buffers,
-            control,
+            RecvMsgBuffers::new(
+                buffers,
+                control,
+            ),
             parsed_control,
             address,
             flags,
@@ -134,8 +134,7 @@ impl super::CompletableOperation for IoRecvMsgData {
         if pending_msg.is_none() {
             return crate::io::failure::IoFailure::Msg(
                 crate::io::failure::data::IoMsgFailure {
-                    data_buffers: None,
-                    control_buffer: None,
+                    buffers: RecvMsgBuffers::default(),
                 }
             );
         }
@@ -157,8 +156,10 @@ impl super::CompletableOperation for IoRecvMsgData {
 
         crate::io::failure::IoFailure::Msg(
             crate::io::failure::data::IoMsgFailure {
-                data_buffers,
-                control_buffer,
+                buffers: RecvMsgBuffers::new(
+                    data_buffers,
+                    control_buffer,
+                ),
             }
         ) 
     }
@@ -175,5 +176,55 @@ impl super::AsUringEntry for IoRecvMsgData {
             pending_msg.as_mut_ptr() as *mut _
         ).flags(self.flags.bits() as u32)
         .build().user_data(key.as_u64())
+    }
+}
+
+impl IoBytesMutRecovery for IoRecvMsgData {
+    fn as_bytes_mut(&self) -> Option<&BytesMut> {
+        self.pending_msg.as_ref().map(|p_msg| {
+            p_msg.buffers().control.as_ref().map(|b| {
+                b.as_bytes()
+            })
+        }).flatten()
+    }
+
+    fn into_bytes_mut(mut self) -> Option<BytesMut> {
+        self.pending_msg.take().map(|p_msg| {
+            unsafe { p_msg.split() }.1.map(|b| {
+                b.into_bytes_unchecked()
+            })
+        }).flatten()
+    }
+}
+
+impl IoBytesMutVecRecovery for IoRecvMsgData {
+    fn as_vec(&self) -> Option<&Vec<BytesMut>> {
+        self.pending_msg.as_ref().map(|p_msg| {
+            p_msg.buffers().data.as_ref().map(|b| {
+                b.as_vec()
+            })
+        }).flatten()
+    }
+
+    fn into_vec(mut self) -> Option<Vec<BytesMut>> {
+        self.pending_msg.take().map(|p_msg| {
+            unsafe { p_msg.split() }.0.map(|b| {
+                b.into_vec()
+            })
+        }).flatten()
+    }
+}
+
+impl IoRecvMessageRecovery for IoRecvMsgData {
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs> {
+        self.pending_msg.as_ref().map(|p_msg| {
+            p_msg.buffers().as_raw()
+        })
+    }
+
+    fn into_recvmsg_buffers(mut self) -> Option<RecvMsgBuffers> {
+        self.pending_msg.take().map(|p_msg| {
+            unsafe { p_msg.into_buffers() }.unwrap()
+        })
     }
 }

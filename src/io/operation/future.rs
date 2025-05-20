@@ -374,7 +374,7 @@ pub (crate) macro __async_impl_types__ {
 
 pub (crate) macro __async_impl_read__ {
     () => {
-        async fn read(&self, buffer_length: usize) -> Result<Bytes, IoError> {
+        async fn read(&self, buffer_length: usize) -> Result<Bytes, crate::io::IoError> {
             Ok(crate::io::operation::future::IoReadFuture::new(
                 crate::io::IoOperation::read(
                     self,
@@ -387,11 +387,14 @@ pub (crate) macro __async_impl_read__ {
 
 pub (crate) macro __async_impl_read_into__ {
     () => {
-        async fn read_into(&self, buffer: BytesMut) -> Result<IoReadOutput<BytesMut>, IoError> {
+        async fn read_into(&self, buffer: BytesMut) -> Result<IoReadOutput<BytesMut>, crate::io::IoError> {
             Ok(crate::io::operation::future::IoReadIntoFuture::new(
                 crate::io::IoOperation::read_into(
                     self,
-                    crate::io::IoOutputBuffer::new(buffer)?
+                    crate::io::IoOutputBuffer::new(buffer)
+                        .map_err(crate::io::OutputBufferSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?
                 )
             ).await?)
         }
@@ -400,7 +403,7 @@ pub (crate) macro __async_impl_read_into__ {
 
 pub (crate) macro __async_impl_read_at__ {
     () => {
-        async fn read_at(&self, offset: usize, buffer_length: usize) -> Result<Bytes, IoError> {
+        async fn read_at(&self, offset: usize, buffer_length: usize) -> Result<Bytes, crate::io::IoError> {
             Ok(crate::io::operation::future::IoReadFuture::new(
                 crate::io::IoOperation::read_at(
                     self,
@@ -414,12 +417,15 @@ pub (crate) macro __async_impl_read_at__ {
 
 pub (crate) macro __async_impl_read_at_into__ {
     () => {
-        async fn read_at_into(&self, offset: usize, buffer: BytesMut) -> Result<IoReadOutput<BytesMut>, IoError> {
+        async fn read_at_into(&self, offset: usize, buffer: BytesMut) -> Result<IoReadOutput<BytesMut>, crate::io::IoError> {
             Ok(crate::io::operation::future::IoReadIntoFuture::new(
                 crate::io::IoOperation::read_at_into(
                     self,
                     offset,
-                    crate::io::IoOutputBuffer::new(buffer)?
+                    crate::io::IoOutputBuffer::new(buffer)
+                        .map_err(crate::io::OutputBufferSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?,
                 )
             ).await?)
         }
@@ -428,7 +434,7 @@ pub (crate) macro __async_impl_read_at_into__ {
 
 pub (crate) macro __async_impl_readv__ {
     () => {
-        async fn readv(&self, buffers_lengths: Vec<usize>) -> Result<Vec<Bytes>, IoError> {
+        async fn readv(&self, buffers_lengths: Vec<usize>) -> Result<Vec<Bytes>, crate::io::IoError> {
             Ok(crate::io::operation::future::IoMultiReadFuture::new(
                 crate::io::IoOperation::readv(
                     self,
@@ -441,11 +447,14 @@ pub (crate) macro __async_impl_readv__ {
 
 pub (crate) macro __async_impl_readv_into__ {
     () => {
-        async fn readv_into(&self, buffers: Vec<BytesMut>) -> Result<IoReadOutput<Vec<BytesMut>>, IoError> {
+        async fn readv_into(&self, buffers: Vec<BytesMut>) -> Result<IoReadOutput<Vec<BytesMut>>, crate::io::IoError> {
             Ok(crate::io::operation::future::IoMultiReadIntoFuture::new(
                 crate::io::IoOperation::readv_into(
                     self,
-                    crate::io::buffers::IoVecOutputBuffer::new(buffers)?
+                    crate::io::buffers::IoVecOutputBuffer::new(buffers)
+                        .map_err(crate::io::OutputBufferVecSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?
                 )?
             ).await?)
         }
@@ -454,7 +463,7 @@ pub (crate) macro __async_impl_readv_into__ {
 
 pub (crate) macro __async_impl_readv_at__ {
     () => {
-        async fn readv_at(&self, offset: usize, buffers_lengths: Vec<usize>) -> Result<Vec<Bytes>, IoError> {
+        async fn readv_at(&self, offset: usize, buffers_lengths: Vec<usize>) -> Result<Vec<Bytes>, crate::io::IoError> {
             Ok(crate::io::operation::future::IoMultiReadFuture::new(
                 crate::io::IoOperation::readv_at(
                     self,
@@ -468,12 +477,15 @@ pub (crate) macro __async_impl_readv_at__ {
 
 pub (crate) macro __async_impl_readv_at_into__ {
     () => {
-        async fn readv_at_into(&self, offset: usize, buffers: Vec<BytesMut>) -> Result<IoReadOutput<Vec<BytesMut>>, IoError> {
+        async fn readv_at_into(&self, offset: usize, buffers: Vec<BytesMut>) -> Result<IoReadOutput<Vec<BytesMut>>, crate::io::IoError> {
             Ok(crate::io::operation::future::IoMultiReadIntoFuture::new(
                 crate::io::IoOperation::readv_at_into(
                     self,
                     offset,
-                    crate::io::buffers::IoVecOutputBuffer::new(buffers)?
+                    crate::io::buffers::IoVecOutputBuffer::new(buffers)
+                        .map_err(crate::io::OutputBufferVecSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?
                 )?
             ).await?)
         }
@@ -508,9 +520,9 @@ pub (crate) macro __async_impl_write__ {
     () => {
         async fn write(&self, buffer: Bytes) -> Result<usize, IoError> {
 
-            let input_buffer = crate::io::IoInputBuffer::new(buffer);
+            let input_buffer_ret = crate::io::IoInputBuffer::new(buffer);
 
-            match input_buffer {
+            match input_buffer_ret {
                 Ok(input_buffer) => {
                     Ok(crate::io::operation::future::IoWriteFuture::new(
                         crate::io::IoOperation::write(
@@ -519,16 +531,34 @@ pub (crate) macro __async_impl_write__ {
                         )
                     ).await?)
                 }
-                Err(crate::io::IoSubmissionError::NonContiguousInputBuffer(input_buffer)) => {
-                    let input_buffer = crate::io::buffers::IoVecInputBuffer::new_single(input_buffer)?;
-                    Ok(crate::io::operation::future::IoWriteFuture::new(
-                        crate::io::IoOperation::writev(
-                            self,
-                            input_buffer
-                        )?
-                    ).await?)
-                },
-                Err(e) => Err(IoError::from(e))
+                Err(e) => {
+                    match e.kind {
+                        crate::io::InvalidIoInputBufferErrorKind::NonContiguousInputBuffer => {
+
+                            let input_buffer = crate::io::buffers::IoVecInputBuffer::new_single(
+                                e.buffer
+                            ).map_err(
+                                crate::io::InputBufferSubmissionError::from
+                            ).map_err(
+                                crate::io::IoSubmissionError::from
+                            )?;
+
+                            Ok(crate::io::operation::future::IoWriteFuture::new(
+                                crate::io::IoOperation::writev(
+                                    self,
+                                    input_buffer
+                                )?
+                            ).await?)
+                        }
+                        _ => {
+                            return Err(crate::io::IoError::from(
+                                crate::io::IoSubmissionError::from(
+                                    crate::io::InputBufferSubmissionError::from(e)
+                                )
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -536,11 +566,14 @@ pub (crate) macro __async_impl_write__ {
 
 pub (crate) macro __async_impl_writev__ {
     () => {
-        async fn writev(&self, buffers: Vec<Bytes>) -> Result<usize, IoError> {
+        async fn writev(&self, buffers: Vec<Bytes>) -> Result<usize, crate::io::IoError> {
             Ok(crate::io::operation::future::IoWriteFuture::new(
                 crate::io::IoOperation::writev(
                     self,
-                    crate::io::buffers::IoVecInputBuffer::new_multiple(buffers)?
+                    crate::io::buffers::IoVecInputBuffer::new_multiple(buffers)
+                        .map_err(crate::io::InputBufferVecSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?
                 )?
             ).await?)
         }
@@ -549,11 +582,11 @@ pub (crate) macro __async_impl_writev__ {
 
 pub (crate) macro __async_impl_write_at__ {
     () => {
-        async fn write_at(&self, offset: usize, buffer: Bytes) -> Result<usize, IoError> {
+        async fn write_at(&self, offset: usize, buffer: Bytes) -> Result<usize, crate::io::IoError> {
 
-            let input_buffer = crate::io::IoInputBuffer::new(buffer);
+            let input_buffer_ret = crate::io::IoInputBuffer::new(buffer);
 
-            match input_buffer {
+            match input_buffer_ret {
                 Ok(input_buffer) => {
                     Ok(crate::io::operation::future::IoWriteFuture::new(
                         crate::io::IoOperation::write_at(
@@ -563,17 +596,35 @@ pub (crate) macro __async_impl_write_at__ {
                         )
                     ).await?)
                 }
-                Err(crate::io::IoSubmissionError::NonContiguousInputBuffer(input_buffer)) => {
-                    let input_buffer = crate::io::buffers::IoVecInputBuffer::new_single(input_buffer)?;
-                    Ok(crate::io::operation::future::IoWriteFuture::new(
-                        crate::io::IoOperation::writev_at(
-                            self,
-                            offset,
-                            input_buffer
-                        )?
-                    ).await?)
-                },
-                Err(e) => Err(IoError::from(e))
+                Err(e) => {
+                    match e.kind {
+                        crate::io::InvalidIoInputBufferErrorKind::NonContiguousInputBuffer => {
+
+                            let input_buffer = crate::io::buffers::IoVecInputBuffer::new_single(
+                                e.buffer
+                            ).map_err(
+                                crate::io::InputBufferSubmissionError::from
+                            ).map_err(
+                                crate::io::IoSubmissionError::from
+                            )?;
+
+                            Ok(crate::io::operation::future::IoWriteFuture::new(
+                                crate::io::IoOperation::writev_at(
+                                    self,
+                                    offset,
+                                    input_buffer
+                                )?
+                            ).await?)
+                        }
+                        _ => {
+                            return Err(crate::io::IoError::from(
+                                crate::io::IoSubmissionError::from(
+                                    crate::io::InputBufferSubmissionError::from(e)
+                                )
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -581,12 +632,15 @@ pub (crate) macro __async_impl_write_at__ {
 
 pub (crate) macro __async_impl_writev_at__ {
     () => {
-        async fn writev_at(&self, offset: usize, buffers: Vec<Bytes>) -> Result<usize, IoError> {
+        async fn writev_at(&self, offset: usize, buffers: Vec<Bytes>) -> Result<usize, crate::io::IoError> {
             Ok(crate::io::operation::future::IoWriteFuture::new(
                 crate::io::IoOperation::writev_at(
                     self,
                     offset,
-                    crate::io::buffers::IoVecInputBuffer::new_multiple(buffers)?
+                    crate::io::buffers::IoVecInputBuffer::new_multiple(buffers)
+                        .map_err(crate::io::InputBufferVecSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?
                 )?
             ).await?)
         }
@@ -621,7 +675,7 @@ pub (crate) macro __async_impl_copy_to__ {
             offset_in: usize,
             offset_out: usize,
             flags: crate::io::operation::data::IoSpliceFlags
-        ) -> Result<usize, IoError> {
+        ) -> Result<usize, crate::io::IoError> {
             Ok(crate::io::operation::future::IoWriteFuture::new(
                 crate::io::IoOperation::splice(
                     self,
@@ -668,11 +722,14 @@ pub (crate) macro __async_impl_recv_into__ {
             &self, 
             buffer: BytesMut,
             flags: crate::io::operation::data::IoRecvFlags
-        ) -> Result<IoReadOutput<BytesMut>, IoError> {
+        ) -> Result<IoReadOutput<BytesMut>, crate::io::IoError> {
             Ok(crate::io::operation::future::IoReadIntoFuture::new(
                 crate::io::IoOperation::recv_into(
                     self,
-                    crate::io::IoOutputBuffer::new(buffer)?,
+                    crate::io::IoOutputBuffer::new(buffer)
+                        .map_err(crate::io::OutputBufferSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?,
                     flags
                 )
             ).await?)
@@ -687,7 +744,7 @@ pub (crate) macro __async_impl_recv_msg__ {
             buffer_lengths: Vec<usize>,
             control_length: usize,
             flags: crate::io::operation::data::IoRecvMsgInputFlags
-        ) -> Result<crate::io::message::IoRecvMessage, IoError> {
+        ) -> Result<crate::io::message::IoRecvMessage, crate::io::IoError> {
             Ok(crate::io::operation::future::IoMessageFuture::new(
                 crate::io::IoOperation::recv_msg(
                     self,
@@ -707,21 +764,17 @@ pub (crate) macro __async_impl_recv_msg_into__ {
             buffers: Option<Vec<BytesMut>>,
             control: Option<BytesMut>,
             flags: crate::io::operation::data::IoRecvMsgInputFlags
-        ) -> Result<crate::io::message::IoRecvMessage, IoError> {
+        ) -> Result<crate::io::message::IoRecvMessage, crate::io::IoError> {
 
-            let output_data_buffers = buffers.map(|b| {
-                crate::io::buffers::IoVecOutputBuffer::new(b)
-            }).transpose()?;
-
-            let output_control_buffer = control.map(|b| {
-                crate::io::buffers::IoOutputBuffer::new(b)
-            }).transpose()?;
+            let prepared_buffers = crate::io::RecvMsgBuffers::new(
+                buffers,
+                control
+            ).prepare().map_err(IoSubmissionError::from)?;
 
             Ok(crate::io::operation::future::IoMessageFuture::new(
                 crate::io::IoOperation::recv_msg_into(
                     self,
-                    output_data_buffers,
-                    output_control_buffer,
+                    prepared_buffers,
                     flags
                 )?
             ).await?)
@@ -754,11 +807,14 @@ pub (crate) macro __async_impl_send__ {
             &self, 
             buffer: Bytes,
             flags: crate::io::operation::data::IoSendFlags
-        ) -> Result<usize, IoError> {
+        ) -> Result<usize, crate::io::IoError> {
             Ok(crate::io::operation::future::IoWriteFuture::new(
                 crate::io::IoOperation::send(
                     self,
-                    crate::io::IoInputBuffer::new(buffer)?,
+                    crate::io::IoInputBuffer::new(buffer)
+                        .map_err(crate::io::InputBufferSubmissionError::from)
+                        .map_err(crate::io::IoSubmissionError::from)
+                    ?,
                     flags
                 )
             ).await?)
@@ -772,7 +828,7 @@ pub (crate) macro __async_impl_send_msg__ {
             &self, 
             message: crate::io::message::IoSendMessage,
             flags: crate::io::operation::data::IoSendFlags
-        ) -> Result<usize, IoError> {
+        ) -> Result<usize, crate::io::IoError> {
             Ok(crate::io::operation::future::IoWriteFuture::new(
                 crate::io::IoOperation::send_msg(
                     self,
