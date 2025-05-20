@@ -76,6 +76,7 @@ pub use buffers::InvalidIoInputBufferError;
 pub use buffers::InvalidIoVecError;
 pub use buffers::RecvMsgBuffers;
 pub use buffers::RecvMsgSubmissionError;
+pub use buffers::EmptySingleVectoredInputBufferError;
 
 use crate::pool::WorkerDispatchError;
 use crate::worker::Message;
@@ -114,7 +115,7 @@ pub enum IoSubmissionError {
 
     #[error("Failed to prepare control messages: {0}")]
     FailedToPrepareControlMessages(#[source] PrepareControlMessageError),
-    
+
 
     // Worker dispatch errors
     #[error("Failed to dispatch operation to worker thread")]
@@ -140,6 +141,46 @@ pub enum IoSubmissionError {
     #[error("A buffer generated invalod iovecs: {0}")]
     InvalidIoInputBufferError(#[from] InvalidIoVecError),
 
+}
+
+impl From<EmptyVectoredOutputBufferError> for IoSubmissionError {
+    fn from(e: EmptyVectoredOutputBufferError) -> Self {
+        IoSubmissionError::OutputBufferVecSubmissionError(
+            OutputBufferVecSubmissionError::InvalidOutputBuffer(e)
+        )
+    }
+}
+
+impl From<EmptyIoOutputBufferError> for IoSubmissionError {
+    fn from(e: EmptyIoOutputBufferError) -> Self {
+        IoSubmissionError::OutputBufferSubmissionError(
+            OutputBufferSubmissionError::InvalidOutputBuffer(e)
+        )
+    }
+}
+
+impl From<EmptyVectoredInputBufferError> for IoSubmissionError {
+    fn from(e: EmptyVectoredInputBufferError) -> Self {
+        IoSubmissionError::InputBufferVecSubmissionError(
+            InputBufferVecSubmissionError::InvalidIoVecInputBuffer(e)
+        )
+    }
+}
+
+impl From<InvalidIoInputBufferError> for IoSubmissionError {
+    fn from(e: InvalidIoInputBufferError) -> Self {
+        IoSubmissionError::InputBufferSubmissionError(
+            InputBufferSubmissionError::InvalidInputBuffer(e)
+        )
+    }
+}
+
+impl From<EmptySingleVectoredInputBufferError> for IoSubmissionError {
+    fn from(e: EmptySingleVectoredInputBufferError) -> Self {
+        IoSubmissionError::InputBufferSubmissionError(
+            InputBufferSubmissionError::InvalidIoVecInputBuffer(e)
+        )
+    }
 }
 
 impl IoBytesMutRecovery for IoSubmissionError {
