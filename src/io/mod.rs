@@ -350,10 +350,10 @@ impl IoRecvMessageRecovery for IoSubmissionError {
 #[error("Error occured during IO operation: {os_error}")]
 pub struct IoOperationError {
 
-    failure: IoFailure,
+    pub failure: IoFailure,
 
     #[source]
-    os_error: OsError
+    pub os_error: OsError
 }
 
 impl IoBytesMutRecovery for IoOperationError {
