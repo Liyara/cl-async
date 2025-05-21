@@ -1622,7 +1622,11 @@ impl IoRecvMessage {
             }
         }
         None
-    } 
+    }
+
+    pub fn is_fin(&self) -> bool {
+        self.buffers.data().is_some() && self.bytes_received == 0
+    }
 
 }
 
