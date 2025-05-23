@@ -808,16 +808,45 @@ pub (crate) macro __async_impl_send__ {
             buffer: Bytes,
             flags: crate::io::operation::data::IoSendFlags
         ) -> Result<usize, crate::io::IoError> {
-            Ok(crate::io::operation::future::IoWriteFuture::new(
-                crate::io::IoOperation::send(
-                    self,
-                    crate::io::IoInputBuffer::new(buffer)
-                        .map_err(crate::io::InputBufferSubmissionError::from)
-                        .map_err(crate::io::IoSubmissionError::from)
-                    ?,
-                    flags
-                )
-            ).await?)
+
+            let input_buffer_ret = crate::io::IoInputBuffer::new(buffer);
+            match input_buffer_ret {
+                Ok(input_buffer) => {
+                    Ok(crate::io::operation::future::IoWriteFuture::new(
+                        crate::io::IoOperation::send(
+                            self,
+                            input_buffer,
+                            flags
+                        )
+                    ).await?)
+                }
+                Err(e) => {
+                    match e.kind {
+                        crate::io::InvalidIoInputBufferErrorKind::NonContiguousInputBuffer => {
+
+                            let msg = crate::io::message::IoSendMessage::new(
+                                Some(crate::io::IoSendMessageDataBufferType::Bytes(e.buffer)),
+                                None,
+                            );
+
+                            Ok(crate::io::operation::future::IoWriteFuture::new(
+                                crate::io::IoOperation::send_msg(
+                                    self,
+                                    msg,
+                                    flags
+                                )?
+                            ).await?)
+                        }
+                        _ => {
+                            return Err(crate::io::IoError::from(
+                                crate::io::IoSubmissionError::from(
+                                    crate::io::InputBufferSubmissionError::from(e)
+                                )
+                            ));
+                        }
+                    }
+                }
+            }
         }
     }
 }

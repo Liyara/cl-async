@@ -56,6 +56,7 @@ pub use message::TlsAlertLevel;
 pub use message::TlsAlertDescription;
 pub use message::TlsAlert;
 pub use message::IoSendMessage;
+pub use message::IoSendMessageDataBufferType;
 pub use message::IoRecvMessage;
 pub use message::IoMessage;
 pub use message::PendingIoMessage;
