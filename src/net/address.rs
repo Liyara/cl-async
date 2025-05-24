@@ -612,11 +612,16 @@ impl Port {
     pub fn smb() -> Self { Port(445) }
     pub fn imaps() -> Self { Port(993) }
     pub fn pop3s() -> Self { Port(995) }
+    pub fn microsoft_sql_server() -> Self { Port(1433) }
+    pub fn microsoft_sql_server_alt() -> Self { Port(1434) }
+    pub fn oracle() -> Self { Port(1521) }
     pub fn mysql() -> Self { Port(3306) }
     pub fn rdp() -> Self { Port(3389) }
     pub fn postgres() -> Self { Port(5432) }
     pub fn redis() -> Self { Port(6379) }
     pub fn http_alt() -> Self { Port(8080) }
+    pub fn mongodb() -> Self { Port(27017) }
+    pub fn db2() -> Self { Port(50000) }
 
     pub fn to_be(&self) -> u16 { self.0.to_be() }
     pub fn to_le(&self) -> u16 { self.0.to_le() }
