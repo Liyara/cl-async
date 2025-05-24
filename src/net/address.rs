@@ -41,9 +41,22 @@ pub enum V4MappedV6Error {
 }
 
 #[derive(Debug, Error)]
+pub enum HostnameResolutionError {
+    #[error("Invalid CString: {0}")]
+    InvalidCString(String),
+
+    #[error("Failed to resolve hostname; {hostname}, message: {message}, code: {code}")]
+    ResolutionFailure {
+        hostname: String,
+        message: String,
+        code: i32,
+    },
+}
+
+#[derive(Debug, Error)]
 pub enum IpParseError {
-    #[error("Unknown address format: {0}")]
-    UnknownFormat(String),
+    #[error("Failed to resolve IP address: {0}")]
+    NoAddressFound(String),
 
     #[error("IP V4 Parse Error: {0}")]
     IpV4ParseError(#[from] IpV4ParseError),
@@ -53,6 +66,9 @@ pub enum IpParseError {
 
     #[error("V4 Mapped V6 Error: {0}")]
     V4MappedV6Error(#[from] V4MappedV6Error),
+
+    #[error("Hostname Resolution Error: {0}")]
+    HostnameResolutionError(#[from] HostnameResolutionError),
 }
 
 #[derive(Debug, Error)]
@@ -62,6 +78,46 @@ pub enum IpError {
 
     #[error("IP V6 Compress Error: {0}")]
     IpV6CompressError(#[from] IpV6CompressError),
+}
+
+pub enum SocketType {
+    Stream,
+    Datagram,
+}
+
+pub struct ResolveHostnamePreferences {
+    pub version: Option<IpVersion>,
+    pub socket_type: Option<SocketType>,
+}
+
+impl Default for ResolveHostnamePreferences {
+    fn default() -> Self {
+        Self {
+            version: None,
+            socket_type: None,
+        }
+    }
+}
+
+impl Into<libc::addrinfo> for ResolveHostnamePreferences {
+    fn into(self) -> libc::addrinfo {
+
+        let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+
+        hints.ai_family = match self.version {
+            Some(IpVersion::V4) => libc::AF_INET,
+            Some(IpVersion::V6) => libc::AF_INET6,
+            None => libc::AF_UNSPEC,
+        };
+
+        hints.ai_socktype = match self.socket_type {
+            Some(SocketType::Stream) => libc::SOCK_STREAM,
+            Some(SocketType::Datagram) => libc::SOCK_DGRAM,
+            None => 0,
+        };
+
+        hints
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -98,6 +154,83 @@ impl IpAddress {
         let bytes = Self::uncompressed_v6_as_bytes(&uncompressed)?;
 
         Ok(IpAddress::V6(bytes))
+    }
+
+    pub fn resolve_hostname(
+        hostname: &str,
+        pref: ResolveHostnamePreferences
+    ) -> Result<Vec<Self>, HostnameResolutionError> {
+
+        let c_hostname = std::ffi::CString::new(hostname)
+            .map_err(|_| HostnameResolutionError::InvalidCString(
+                hostname.to_string()
+            )
+        )?;
+
+        let hints: libc::addrinfo = pref.into();
+        let mut result_ptr: *mut libc::addrinfo = std::ptr::null_mut();
+
+        let ret = unsafe {
+            libc::getaddrinfo(
+                c_hostname.as_ptr(),
+                std::ptr::null(),
+                &hints,
+                &mut result_ptr
+            )
+        };
+
+        if ret != 0 {
+            let msg = unsafe {
+                std::ffi::CStr::from_ptr(libc::gai_strerror(ret))
+            }.to_string_lossy().into_owned();
+
+            if !result_ptr.is_null() {
+                unsafe { libc::freeaddrinfo(result_ptr) };
+            }
+
+            return Err(HostnameResolutionError::ResolutionFailure {
+                hostname: hostname.to_string(),
+                message: msg,
+                code: ret,
+            });
+        }
+
+        let mut resolved_ips = Vec::new();
+        let mut current_addrinfo = result_ptr;
+
+        while !current_addrinfo.is_null() {
+            let addrinfo = unsafe { &*current_addrinfo };
+
+            match addrinfo.ai_family {
+                libc::AF_INET => {
+
+                    let sockaddr_in = unsafe {
+                        &*(addrinfo.ai_addr as *const libc::sockaddr_in)
+                    };
+
+                    let ip_bytes = u32::from_be(sockaddr_in.sin_addr.s_addr).to_be_bytes();
+                    resolved_ips.push(IpAddress::V4(ip_bytes));
+                },
+                libc::AF_INET6 => {
+
+                    let sockaddr_in6 = unsafe {
+                        &*(addrinfo.ai_addr as *const libc::sockaddr_in6)
+                    };
+
+                    resolved_ips.push(IpAddress::V6(sockaddr_in6.sin6_addr.s6_addr));
+                },
+                _ => ()
+            }
+
+            current_addrinfo = addrinfo.ai_next;
+        }
+
+        // Free the address info structure
+        if !result_ptr.is_null() {
+            unsafe { libc::freeaddrinfo(result_ptr) };
+        }
+
+        Ok(resolved_ips)
     }
 
     pub fn is_v4_mapped_v6(&self) -> bool {
@@ -424,7 +557,16 @@ impl TryFrom<String> for IpAddress {
         } else if Self::is_v6(ip_formatted) {
             Self::v6(ip_formatted)
         } else {
-            Err(IpParseError::UnknownFormat(ip_formatted.to_string()))
+            let ips = Self::resolve_hostname(
+                ip_formatted,
+                ResolveHostnamePreferences::default()
+            )?;
+
+            if ips.is_empty() {
+                Err(IpParseError::NoAddressFound(ip_formatted.to_string()))
+            } else {
+                Ok(ips[0])
+            }
         }   
     }
 }
