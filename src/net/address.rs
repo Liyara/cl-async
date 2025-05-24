@@ -612,8 +612,8 @@ impl Port {
     pub fn smb() -> Self { Port(445) }
     pub fn imaps() -> Self { Port(993) }
     pub fn pop3s() -> Self { Port(995) }
-    pub fn microsoft_sql_server() -> Self { Port(1433) }
-    pub fn microsoft_sql_server_alt() -> Self { Port(1434) }
+    pub fn mssql() -> Self { Port(1433) }
+    pub fn mssql_alt() -> Self { Port(1434) }
     pub fn oracle() -> Self { Port(1521) }
     pub fn mysql() -> Self { Port(3306) }
     pub fn rdp() -> Self { Port(3389) }
