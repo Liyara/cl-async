@@ -547,9 +547,9 @@ impl From<[u8; 16]> for IpAddress {
     }
 }
 
-impl TryFrom<String> for IpAddress {
+impl TryFrom<&str> for IpAddress {
     type Error = IpParseError;
-    fn try_from(ip: String) -> Result<Self, Self::Error> {
+    fn try_from(ip: &str) -> Result<Self, Self::Error> {
         let ip_formatted = ip.trim();
         
         if Self::is_v4(ip_formatted) {
@@ -1062,7 +1062,7 @@ mod tests {
             assert_eq!(display_str, expected_str, "Display for {:?} failed", bytes);
 
             // Also test TryFrom<String> for the expected string
-            let parsed_back = IpAddress::try_from(expected_str.to_string());
+            let parsed_back = IpAddress::try_from(expected_str);
              // Handle the v4-mapped case where parsing might differ
             if expected_str != "::ffff:192.168.0.1" { // Skip this specific string as it's not standard v6 format
                  assert!(parsed_back.is_ok(), "Failed to parse back '{}'", expected_str);
@@ -1091,20 +1091,20 @@ mod tests {
      #[test]
     fn test_ipaddress_try_from_string() {
         // V4
-        let ip_v4_str = "192.168.10.1".to_string();
-        let ip_v4 = IpAddress::try_from(ip_v4_str.clone()).unwrap();
+        let ip_v4_str = "192.168.10.1";
+        let ip_v4 = IpAddress::try_from(ip_v4_str).unwrap();
         assert_eq!(ip_v4, IpAddress::V4([192, 168, 10, 1]));
 
         // V6
-        let ip_v6_str = "::1".to_string();
-        let ip_v6 = IpAddress::try_from(ip_v6_str.clone()).unwrap();
+        let ip_v6_str = "::1";
+        let ip_v6 = IpAddress::try_from(ip_v6_str).unwrap();
         let mut lh_bytes = [0u8; 16]; lh_bytes[15] = 1;
         assert_eq!(ip_v6, IpAddress::V6(lh_bytes));
 
         // Invalid
-        let invalid_str = "not an ip".to_string();
+        let invalid_str = "not an ip";
         assert!(IpAddress::try_from(invalid_str).is_err());
-        let invalid_str_dots_colon = "192.168.0.1::1".to_string(); // Contains both
+        let invalid_str_dots_colon = "192.168.0.1::1"; // Contains both
          // Your current logic might parse this as V4. Test the actual behavior.
         // assert!(IpAddress::try_from(invalid_str_dots_colon).is_err()); // Or assert specific V4/V6 result if that's intended
          let result = IpAddress::try_from(invalid_str_dots_colon);
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_v4_mapped_v6_try_from_string() {
-        let s = "::ffff:10.0.0.1".to_string();
+        let s = "::ffff:10.0.0.1";
         let ip = IpAddress::try_from(s).unwrap();
 
         // Verify that TryFrom<String> parses a mapped IPv6 address properly.
