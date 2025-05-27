@@ -143,6 +143,10 @@ impl IpAddress {
     // Create an IP address from an IPv6 string; both compressed and uncompressed formats are accepted
     pub fn v6(addr: &str) -> Result<Self, IpParseError> {
 
+        if addr.starts_with("[") && addr.ends_with("]") {
+            return Self::v6(&addr[1..addr.len() - 1]);
+        }
+
         if Self::is_mapped_v6(addr) {
             return Ok(Self::parse_mapped_v6(addr)?);
         }
