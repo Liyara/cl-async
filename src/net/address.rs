@@ -422,7 +422,7 @@ impl IpAddress {
     }
 
     fn is_v6(addr: &str) -> bool {
-        Self::is_compressed_v6(addr) || Self::is_uncompressed_v6(addr)
+        Self::is_compressed_v6(addr) || Self::is_uncompressed_v6(addr) || Self::is_mapped_v6(addr)
     }
 
     fn is_v4(addr: &str) -> bool {

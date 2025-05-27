@@ -13,7 +13,7 @@ use crate::{io::{
 }, OsError};
 
 use super::{
-    AddressRetrievalError, LocalAddress, PeerAddress, SocketConfigurable, SocketOption
+    AddressRetrievalError, IpVersion, LocalAddress, PeerAddress, SocketConfigurable, SocketOption
 };
 
 #[derive(Debug, Error)]
@@ -64,8 +64,13 @@ impl TcpStream {
 
     pub async fn new_client(peer_addr: PeerAddress) -> Result<Self, TcpConnectionError> {
 
+        let domain = match peer_addr.ip().version() {
+            IpVersion::V4 => libc::AF_INET,
+            IpVersion::V6 => libc::AF_INET6,
+        };
+
         let fd = syscall!(socket(
-            libc::AF_INET,
+            domain,
             libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
             0
         )).map_err(OsError::from)?;
