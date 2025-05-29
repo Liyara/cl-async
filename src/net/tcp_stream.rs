@@ -30,6 +30,7 @@ pub enum TcpConnectionError {
     }
 }
 
+#[derive(Debug)]
 pub struct TcpStream {
     fd: OwnedFdAsync,
     local_addr: Option<LocalAddress>,
