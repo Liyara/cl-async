@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use once_cell::sync::Lazy;
 use thiserror::Error;
@@ -217,13 +219,13 @@ impl IoOutputBuffer {
 
 
 pub trait GenerateIoVecs {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError>;
+    unsafe fn generate_iovecs(&self) -> Result<Vec<libc::iovec>, InvalidIoVecError>;
 }
 
 #[derive(Debug)]
 pub enum IoVecInputSource {
     Single(Bytes),
-    Multiple(Vec<Bytes>),
+    Multiple(Arc<Vec<Bytes>>),
 }
 
 #[derive(Debug, Error)]
@@ -235,7 +237,7 @@ pub struct EmptySingleVectoredInputBufferError {
 #[derive(Debug, Error)]
 #[error("The input buffer is empty.")]
 pub struct EmptyVectoredInputBufferError {
-    pub buffer: Vec<Bytes>,
+    pub buffer: Arc<Vec<Bytes>>,
 }
 
 #[derive(Debug)]
@@ -252,7 +254,7 @@ impl IoVecInputBuffer {
         Ok(Self(IoVecInputSource::Single(data)))
     }
 
-    pub fn new_multiple(data: Vec<Bytes>) -> Result<Self, EmptyVectoredInputBufferError> {
+    pub fn new_multiple(data: Arc<Vec<Bytes>>) -> Result<Self, EmptyVectoredInputBufferError> {
         if data.is_empty() {
             return Err(EmptyVectoredInputBufferError { buffer: data });
         }
@@ -266,6 +268,13 @@ impl IoVecInputBuffer {
 
     pub fn as_source(&self) -> &IoVecInputSource {
         &self.0
+    }
+
+    pub fn try_as_bytes(&self) -> Option<&Bytes> {
+        match &self.0 {
+            IoVecInputSource::Single(bytes) => Some(bytes),
+            IoVecInputSource::Multiple(_) => None,
+        }
     }
 
     /*
@@ -292,6 +301,20 @@ impl IoVecInputBuffer {
         }
     }
 
+    pub fn try_as_mut_bytes(&mut self) -> Option<&mut Bytes> {
+        match &mut self.0 {
+            IoVecInputSource::Single(bytes) => Some(bytes),
+            IoVecInputSource::Multiple(_) => None,
+        }
+    }
+
+    pub fn try_into_bytes(self) -> Option<Bytes> {
+        match self.0 {
+            IoVecInputSource::Single(bytes) => Some(bytes),
+            IoVecInputSource::Multiple(_) => None,
+        }
+    }
+
     /*
         SAFETY: The caller must ensure that the source type is `Single`.
     */
@@ -301,6 +324,13 @@ impl IoVecInputBuffer {
             IoVecInputSource::Multiple(_) => {
                 panic!("Expected a single buffer, but got multiple.");
             }
+        }
+    }
+
+    pub fn try_as_vec(&self) -> Option<&Vec<Bytes>> {
+        match &self.0 {
+            IoVecInputSource::Single(_) => None,
+            IoVecInputSource::Multiple(vec) => Some(vec),
         }
     }
 
@@ -319,19 +349,11 @@ impl IoVecInputBuffer {
     /*
         SAFETY: The caller must ensure that the source type is `Multiple`.
     */
-    pub unsafe fn as_mut_vec(&mut self) -> &mut Vec<Bytes> {
-        match &mut self.0 {
-            IoVecInputSource::Single(_) => {
-                panic!("Expected multiple buffers, but got a single one.");
-            }
-            IoVecInputSource::Multiple(vec) => vec,
-        }
-    }
 
     /*
         SAFETY: The caller must ensure that the source type is `Multiple`.
     */
-    pub unsafe fn into_vec(self) -> Vec<Bytes> {
+    pub unsafe fn into_vec(self) -> Arc<Vec<Bytes>> {
         match self.0 {
             IoVecInputSource::Single(_) => {
                 panic!("Expected multiple buffers, but got a single one.");
@@ -342,12 +364,12 @@ impl IoVecInputBuffer {
 }
 
 impl GenerateIoVecs for IoVecInputBuffer {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+    unsafe fn generate_iovecs(&self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         match self.0 {
-            IoVecInputSource::Single(ref mut bytes) => {
+            IoVecInputSource::Single(ref bytes) => {
                 unsafe { Ok(bytes.generate_iovecs()?) }
             },
-            IoVecInputSource::Multiple(ref mut vec) => {
+            IoVecInputSource::Multiple(ref vec) => {
                 unsafe { Ok(vec.generate_iovecs()?) }
             },
         }
@@ -549,7 +571,7 @@ impl IoRecvMsgOutputBuffers {
 }
 
 impl GenerateIoVecs for Bytes {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+    unsafe fn generate_iovecs(&self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         let iovecs = generate_iovecs_single(self.clone());
         assert_iovecs_valid(&iovecs)?;
         Ok(iovecs)
@@ -557,9 +579,9 @@ impl GenerateIoVecs for Bytes {
 }
 
 impl GenerateIoVecs for Vec<Bytes> {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+    unsafe fn generate_iovecs(&self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         let mut iovecs = Vec::new();
-        for bytes in self.iter_mut() {
+        for bytes in self.iter() {
             let iovecs_single = generate_iovecs_single(bytes.clone());
             if iovecs_single.is_empty() { continue; }
             iovecs.extend(iovecs_single);
@@ -570,17 +592,25 @@ impl GenerateIoVecs for Vec<Bytes> {
 }
 
 impl GenerateIoVecs for Vec<BytesMut> {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+    unsafe fn generate_iovecs(&self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         let mut iovecs = Vec::new();
-        for bytes in self.iter_mut() {
-            let chunk = bytes.chunk_mut();
-            let len = chunk.len();
+        for bytes in self.iter() {
 
-            if len == 0 { continue; }
+            let ptr = bytes.as_ptr() as *mut u8;
+
+            let current_len = bytes.len();
+            let cap = bytes.capacity();
+
+            if cap <= current_len { continue; }
+            let uninit_chunk_len = cap - current_len;
+
+            let uninit_chunk_ptr_mut = unsafe {
+                ptr.add(current_len) as *mut libc::c_void
+            };
 
             let iovec = libc::iovec {
-                iov_base: chunk.as_mut_ptr() as *mut libc::c_void,
-                iov_len: len,
+                iov_base: uninit_chunk_ptr_mut,
+                iov_len: uninit_chunk_len,
             };
 
             iovecs.push(iovec);
@@ -676,7 +706,7 @@ impl IoVecOutputBuffer {
 }
 
 impl GenerateIoVecs for IoVecOutputBuffer {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+    unsafe fn generate_iovecs(&self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         unsafe { self.0.generate_iovecs() }
     }
 }
@@ -728,7 +758,7 @@ pub enum InputBufferVecSubmissionError {
     #[error("The provided input buffers generated an invalid iovec: {source}")]
     InvalidIoVec {
 
-        buffer: Vec<Bytes>,
+        buffer: Arc<Vec<Bytes>>,
 
         #[source]
         source: InvalidIoVecError,
@@ -744,7 +774,7 @@ impl InputBufferVecSubmissionError {
         }
     }
 
-    pub fn into_buffers(self) -> Vec<Bytes> {
+    pub fn into_buffers(self) -> Arc<Vec<Bytes>> {
         match self {
             InputBufferVecSubmissionError::InvalidIoVecInputBuffer(e) => e.buffer,
             InputBufferVecSubmissionError::InvalidIoVec { buffer, .. } => buffer,

@@ -1,4 +1,4 @@
-use std::{fmt, os::fd::RawFd, pin::Pin, ptr::read_unaligned};
+use std::{fmt, os::fd::RawFd, pin::Pin, ptr::read_unaligned, sync::Arc};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use thiserror::Error;
@@ -1295,11 +1295,11 @@ impl IoControlMessage {
 #[derive(Debug)]
 pub enum IoSendMessageDataBufferType {
     Bytes(Bytes),
-    Vec(Vec<Bytes>),
+    Vec(Arc<Vec<Bytes>>),
 }
 
 impl GenerateIoVecs for IoSendMessageDataBufferType {
-    unsafe fn generate_iovecs(&mut self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
+    unsafe fn generate_iovecs(&self) -> Result<Vec<libc::iovec>, InvalidIoVecError> {
         match self {
             IoSendMessageDataBufferType::Bytes(buffer) => {
                 unsafe { Ok(buffer.generate_iovecs()?) }
@@ -1358,7 +1358,7 @@ impl IoSendMessage {
                 TlsRecordType::Alert,
             )),
         ))
-        .add_data_buffer(Bytes::from(vec![
+        .set_data_buffer(Bytes::from(vec![
             TlsAlertLevel::Warning as u8,
             TlsAlertDescription::CloseNotify as u8,
         ]))
@@ -1375,7 +1375,7 @@ impl IoSendMessage {
     }
 
     // Send multiple buffers with no control
-    pub fn send_buffers(buffers: Vec<Bytes>) -> Self {
+    pub fn send_buffers(buffers: Arc<Vec<Bytes>>) -> Self {
         Self {
             data: Some(IoSendMessageDataBufferType::Vec(buffers)),
             control: None,
@@ -1399,7 +1399,7 @@ impl IoSendMessage {
 
     // Send multiple buffers to specific address with no control
     pub fn send_buffers_to(
-        buffers: Vec<Bytes>,
+        buffers: Arc<Vec<Bytes>>,
         address: PeerAddress,
     ) -> Self {
         Self {
@@ -1475,50 +1475,20 @@ impl IoSendMessage {
         self
     }
 
-    pub fn add_data_buffer(
+    pub fn set_data_buffer(
         mut self,
-        buffer: Bytes,
+        buffer: Bytes
     ) -> Self {
-
-        if self.data.is_none() {
-            self.data = Some(IoSendMessageDataBufferType::Bytes(buffer));
-            self
-        }
-
-        else if let Some(IoSendMessageDataBufferType::Bytes(existing_buffer)) = self.data {
-            self.data = Some(IoSendMessageDataBufferType::Vec(vec![existing_buffer, buffer]));
-            self
-        }
-
-        else if let Some(IoSendMessageDataBufferType::Vec(ref mut existing_buffers)) = self.data {
-            existing_buffers.push(buffer);
-            self
-        }
-
-        else { unreachable!() }
+        self.data = Some(IoSendMessageDataBufferType::Bytes(buffer));
+        self
     }
 
-    pub fn add_data_buffers(
+    pub fn set_data_buffers(
         mut self,
-        buffers: Vec<Bytes>,
+        buffers: Arc<Vec<Bytes>>
     ) -> Self {
-        
-        if self.data.is_none() {
-            self.data = Some(IoSendMessageDataBufferType::Vec(buffers));
-            self
-        }
-
-        else if let Some(IoSendMessageDataBufferType::Bytes(existing_buffer)) = self.data {
-            self.data = Some(IoSendMessageDataBufferType::Vec(vec![existing_buffer]));
-            self.add_data_buffers(buffers)
-        }
-
-        else if let Some(IoSendMessageDataBufferType::Vec(ref mut existing_buffers)) = self.data {
-            existing_buffers.extend(buffers);
-            self
-        }
-
-        else { unreachable!() }
+        self.data = Some(IoSendMessageDataBufferType::Vec(buffers));
+        self
     }
 
     pub fn clear_data_buffers(mut self) -> Self {

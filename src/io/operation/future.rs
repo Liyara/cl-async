@@ -244,6 +244,10 @@ pub trait AsyncIoWriteTypes: AsyncIoTypes {
     type WriteInputBuffer;
 }
 
+pub trait AsyncIoScatterWriteTypes: AsyncIoTypes {
+    type WritevInputBuffer;
+}
+
 pub trait AsyncIoReadMessageTypes: AsyncIoTypes {
     type OutputMessage;
     type ReadMessageInputBuffer;
@@ -263,9 +267,9 @@ pub trait AsyncReadable: AsyncIoReadTypes + AsyncGatherReadable {
     fn read_at_into(&self, offset: usize, buffer: Self::ReadInputBuffer) -> impl Future<Output = Result<Self::ReadIntoOutputBuffer, Self::Error>>;
 }
 
-pub trait AsyncScatterWritable: AsyncIoWriteTypes {
-    fn writev(&self, buffers: Vec<Self::WriteInputBuffer>) -> impl Future<Output = Result<Self::OutputBytesWritten, Self::Error>>;
-    fn writev_at(&self, offset: usize, buffers: Vec<Self::WriteInputBuffer>) -> impl Future<Output = Result<Self::OutputBytesWritten, Self::Error>>;
+pub trait AsyncScatterWritable: AsyncIoWriteTypes + AsyncIoScatterWriteTypes {
+    fn writev(&self, buffers: Self::WritevInputBuffer) -> impl Future<Output = Result<Self::OutputBytesWritten, Self::Error>>;
+    fn writev_at(&self, offset: usize, buffers: Self::WritevInputBuffer) -> impl Future<Output = Result<Self::OutputBytesWritten, Self::Error>>;
 }
 
 pub trait AsyncWritable: AsRawFd + AsyncScatterWritable {
@@ -361,6 +365,9 @@ pub (crate) macro __async_impl_types__ {
         impl crate::io::operation::future::AsyncIoWriteTypes for $type {
             type OutputBytesWritten = usize;
             type WriteInputBuffer = Bytes;
+        }
+        impl crate::io::operation::future::AsyncIoScatterWriteTypes for $type {
+            type WritevInputBuffer = std::sync::Arc<Vec<Bytes>>;
         }
         impl crate::io::operation::future::AsyncIoReadMessageTypes for $type {
             type OutputMessage = crate::io::message::IoRecvMessage;
@@ -566,7 +573,7 @@ pub (crate) macro __async_impl_write__ {
 
 pub (crate) macro __async_impl_writev__ {
     () => {
-        async fn writev(&self, buffers: Vec<Bytes>) -> Result<usize, crate::io::IoError> {
+        async fn writev(&self, buffers: std::sync::Arc<Vec<Bytes>>) -> Result<usize, crate::io::IoError> {
             Ok(crate::io::operation::future::IoWriteFuture::new(
                 crate::io::IoOperation::writev(
                     self,
@@ -632,7 +639,7 @@ pub (crate) macro __async_impl_write_at__ {
 
 pub (crate) macro __async_impl_writev_at__ {
     () => {
-        async fn writev_at(&self, offset: usize, buffers: Vec<Bytes>) -> Result<usize, crate::io::IoError> {
+        async fn writev_at(&self, offset: usize, buffers: std::sync::Arc<Vec<Bytes>>) -> Result<usize, crate::io::IoError> {
             Ok(crate::io::operation::future::IoWriteFuture::new(
                 crate::io::IoOperation::writev_at(
                     self,

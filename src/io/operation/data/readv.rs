@@ -8,7 +8,7 @@ struct IoReadvDataInner {
 }
 
 impl IoReadvDataInner {
-    fn new(mut iovec: IoVecOutputBuffer) -> Result<Self, IoSubmissionError> {
+    fn new(iovec: IoVecOutputBuffer) -> Result<Self, IoSubmissionError> {
         
         let _iovec_ptr = unsafe { iovec.generate_iovecs()? };
 
