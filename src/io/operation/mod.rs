@@ -92,6 +92,15 @@ impl IoBytesMutRecovery for IoType {
             _ => None,
         }
     }
+    
+    fn take_bytes_mut(&mut self) -> Option<BytesMut> {
+        match self {
+            IoType::Read(data) => data.take_bytes_mut(),
+            IoType::Recv(data) => data.take_bytes_mut(),
+            IoType::RecvMsg(data) => data.take_bytes_mut(),
+            _ => None,
+        }
+    }
 }
     
 
@@ -111,6 +120,14 @@ impl IoBytesMutVecRecovery for IoType {
             _ => None,
         }  
     }
+    
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>> {
+        match self {
+            IoType::Readv(data) => data.take_vec(),
+            IoType::RecvMsg(data) => data.take_vec(),
+            _ => None,
+        }
+    }
 }
 
 impl IoRecvMessageRecovery for IoType {
@@ -124,6 +141,13 @@ impl IoRecvMessageRecovery for IoType {
     fn into_recvmsg_buffers(self) -> Option<RecvMsgBuffers> {
         match self {
             IoType::RecvMsg(data) => data.into_recvmsg_buffers(),
+            _ => None,
+        }
+    }
+    
+    fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers> {
+        match self {
+            IoType::RecvMsg(data) => data.take_recvmsg_buffers(),
             _ => None,
         }
     }
@@ -699,6 +723,10 @@ impl IoBytesMutRecovery for IoOperation {
     fn into_bytes_mut(self) -> Option<BytesMut> {
         self.t.into_bytes_mut()
     }
+    
+    fn take_bytes_mut(&mut self) -> Option<BytesMut> {
+        self.t.take_bytes_mut()
+    }
 }
 
 impl IoBytesMutVecRecovery for IoOperation {
@@ -709,6 +737,10 @@ impl IoBytesMutVecRecovery for IoOperation {
     fn into_vec(self) -> Option<Vec<BytesMut>> {
         self.t.into_vec()
     }
+    
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>> {
+        self.t.take_vec()
+    }
 }
 
 impl IoRecvMessageRecovery for IoOperation {
@@ -718,5 +750,9 @@ impl IoRecvMessageRecovery for IoOperation {
 
     fn into_recvmsg_buffers(self) -> Option<RecvMsgBuffers> {
         self.t.into_recvmsg_buffers()
+    }
+    
+    fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers> {
+        self.t.take_recvmsg_buffers()
     }
 }

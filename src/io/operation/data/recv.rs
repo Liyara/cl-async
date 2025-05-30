@@ -101,4 +101,10 @@ impl IoBytesMutRecovery for IoRecvData {
             b.into_bytes_unchecked()
         })
     }
+    
+    fn take_bytes_mut(&mut self) -> Option<BytesMut> {
+        self.buffer.take().map(|b| {
+            b.into_bytes_unchecked()
+        })
+    }
 }

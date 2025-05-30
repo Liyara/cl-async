@@ -89,18 +89,21 @@ use crate::OsError;
 pub trait IoBytesMutRecovery {
     fn as_bytes_mut(&self) -> Option<&BytesMut>;
     fn into_bytes_mut(self) -> Option<BytesMut>;
+    fn take_bytes_mut(&mut self) -> Option<BytesMut>;
 }
 
 #[enum_dispatch]
 pub trait IoBytesMutVecRecovery {
     fn as_vec(&self) -> Option<&Vec<BytesMut>>;
     fn into_vec(self) -> Option<Vec<BytesMut>>;
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>>;
 }
 
 #[enum_dispatch]
 pub trait IoRecvMessageRecovery {
     fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs>;
     fn into_recvmsg_buffers(self) -> Option<RecvMsgBuffers>;
+    fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers>;
 }
 
 // These errors occur before an operation leaves the calling thread
@@ -240,6 +243,34 @@ impl IoBytesMutRecovery for IoSubmissionError {
             _ => None,
         }
     }
+    
+    fn take_bytes_mut(&mut self) -> Option<BytesMut> {
+        match self {
+            IoSubmissionError::FailedToDispatchOperation(e) => match e {
+                WorkerDispatchError::FailedToFindWorker {payload, .. } => {
+                    payload.take_bytes_mut()
+                }
+                WorkerDispatchError::FailedToSendMessage(send_error) => {
+                    match send_error.as_message_mut() {
+                        Message::SubmitIO(submission) => {
+                            submission.op.take_bytes_mut()
+                        },
+                        _ => None,
+                    }
+                }  
+            },
+            IoSubmissionError::OutputBufferSubmissionError(output_buffer_submission_error) => {
+                match output_buffer_submission_error {
+                    OutputBufferSubmissionError::InvalidOutputBuffer(e) => Some(std::mem::take(&mut e.buffer)),
+                    OutputBufferSubmissionError::InvalidIoVec { buffer, ..} => Some(std::mem::take(buffer)),
+                }
+            },
+            IoSubmissionError::RecvMsgBuffersSubmissionError(recv_msg_submission_error) => {
+                recv_msg_submission_error.as_buffers_mut().take_control()
+            }
+            _ => None,
+        }
+    }
 }
 
 impl IoBytesMutVecRecovery for IoSubmissionError {
@@ -298,6 +329,34 @@ impl IoBytesMutVecRecovery for IoSubmissionError {
             _ => None,
         }
     }
+    
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>> {
+        match self {
+            IoSubmissionError::FailedToDispatchOperation(e) => match e {
+                WorkerDispatchError::FailedToFindWorker { payload, .. } => {
+                    payload.take_vec()
+                }
+                WorkerDispatchError::FailedToSendMessage(send_error) => {
+                    match send_error.as_message_mut() {
+                        Message::SubmitIO(submission) => {
+                            submission.op.take_vec()
+                        },
+                        _ => None,
+                    }
+                }  
+            },
+            IoSubmissionError::OutputBufferVecSubmissionError(output_buffer_vec_submission_error) => {
+                match output_buffer_vec_submission_error {
+                    OutputBufferVecSubmissionError::InvalidIoVec { buffer, ..} => Some(std::mem::take(buffer)),
+                    OutputBufferVecSubmissionError::InvalidOutputBuffer(e) => Some(std::mem::take(&mut e.buffer)),
+                }
+            },
+            IoSubmissionError::RecvMsgBuffersSubmissionError(recv_msg_submission_error) => {
+                recv_msg_submission_error.as_buffers_mut().take_data()
+            }
+            _ => None,
+        }
+    }
 }
 
 impl IoRecvMessageRecovery for IoSubmissionError {
@@ -344,6 +403,28 @@ impl IoRecvMessageRecovery for IoSubmissionError {
             _ => None,
         }
     }
+    
+    fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers> {
+        match self {
+            IoSubmissionError::FailedToDispatchOperation(e) => match e {
+                WorkerDispatchError::FailedToFindWorker {payload, .. } => {
+                    payload.take_recvmsg_buffers()
+                }
+                WorkerDispatchError::FailedToSendMessage(send_error) => {
+                    match send_error.as_message_mut() {
+                        Message::SubmitIO(submission) => {
+                            submission.op.take_recvmsg_buffers()
+                        },
+                        _ => None,
+                    }
+                }  
+            },
+            IoSubmissionError::RecvMsgBuffersSubmissionError(recv_msg_submission_error) => {
+                Some(std::mem::take(&mut recv_msg_submission_error.buffers))
+            }
+            _ => None,
+        }
+    }
 }
 
 // These errors occur after an operation has been submitted to the kernel
@@ -372,6 +453,13 @@ impl IoBytesMutRecovery for IoOperationError {
             _ => None,
         }
     }
+    
+    fn take_bytes_mut(&mut self) -> Option<BytesMut> {
+        match &mut self.failure {
+            IoFailure::Read(data) => Some(std::mem::take(&mut data.buffer)),
+            _ => None,
+        }
+    }
 }
 
 impl IoBytesMutVecRecovery for IoOperationError {
@@ -388,6 +476,13 @@ impl IoBytesMutVecRecovery for IoOperationError {
             _ => None,
         }
     }
+    
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>> {
+        match &mut self.failure {
+            IoFailure::MultiRead(data) => Some(std::mem::take(&mut data.buffers)),
+            _ => None,
+        }
+    }
 }
 
 impl IoRecvMessageRecovery for IoOperationError {
@@ -401,6 +496,13 @@ impl IoRecvMessageRecovery for IoOperationError {
     fn into_recvmsg_buffers(self) -> Option<RecvMsgBuffers> {
         match self.failure {
             IoFailure::Msg(data) => Some(data.buffers),
+            _ => None,
+        }
+    }
+    
+    fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers> {
+        match &mut self.failure {
+            IoFailure::Msg(data) => Some(std::mem::take(&mut data.buffers)),
             _ => None,
         }
     }
@@ -461,6 +563,14 @@ impl IoBytesMutRecovery for IoError {
             IoError::Processing(_) => None,
         }
     }
+    
+    fn take_bytes_mut(&mut self) -> Option<BytesMut> {
+        match self {
+            IoError::Submission(e) => e.take_bytes_mut(),
+            IoError::Operation(e) => e.take_bytes_mut(),
+            IoError::Processing(_) => None,
+        }
+    }
 }
 
 impl IoBytesMutVecRecovery for IoError {
@@ -480,6 +590,14 @@ impl IoBytesMutVecRecovery for IoError {
             IoError::Processing(_) => None,
         }
     }
+    
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>> {
+        match self {
+            IoError::Submission(e) => e.take_vec(),
+            IoError::Operation(e) => e.take_vec(),
+            IoError::Processing(_) => None,
+        }
+    }
 }
 
 impl IoRecvMessageRecovery for IoError {
@@ -496,6 +614,14 @@ impl IoRecvMessageRecovery for IoError {
         match self {
             IoError::Submission(e) => e.into_recvmsg_buffers(),
             IoError::Operation(e) => e.into_recvmsg_buffers(),
+            IoError::Processing(_) => None,
+        }
+    }
+    
+    fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers> {
+        match self {
+            IoError::Submission(e) => e.take_recvmsg_buffers(),
+            IoError::Operation(e) => e.take_recvmsg_buffers(),
             IoError::Processing(_) => None,
         }
     }

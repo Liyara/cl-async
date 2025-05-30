@@ -105,4 +105,10 @@ impl IoBytesMutVecRecovery for IoReadvData {
             b.into_vec()
         })
     }
+    
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>> {
+        self.inner.iovec.take().map(|b| {
+            b.into_vec()
+        })
+    }
 }

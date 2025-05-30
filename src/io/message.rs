@@ -1907,6 +1907,10 @@ impl<T: PendingIoMessageState> PendingIoMessage<T> {
     pub fn buffers(&self) -> &IoRecvMsgOutputBuffers {
         &self.inner.buffers
     }
+
+    pub fn buffers_mut(&mut self) -> &mut IoRecvMsgOutputBuffers {
+        &mut self.inner.buffers
+    }
 }
 
 unsafe impl Send for PendingIoMessage<PendingIoMessageStateWaiting> {}

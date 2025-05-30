@@ -878,4 +878,8 @@ impl RecvMsgSubmissionError {
     pub fn into_buffers(self) -> RecvMsgBuffers {
         self.buffers
     }
+
+    pub fn as_buffers_mut(&mut self) -> &mut RecvMsgBuffers {
+        &mut self.buffers
+    }
 }

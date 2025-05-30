@@ -19,6 +19,10 @@ impl SendToWorkerChannelError {
     pub fn as_message(&self) -> &Message {
         &self.source.0
     }
+
+    pub fn as_message_mut(&mut self) -> &mut Message {
+        &mut self.source.0
+    }
 }
 
 #[derive(Debug, Clone)]

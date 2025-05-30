@@ -195,6 +195,14 @@ impl IoBytesMutRecovery for IoRecvMsgData {
             })
         }).flatten()
     }
+    
+    fn take_bytes_mut(&mut self) -> Option<BytesMut> {
+        self.pending_msg.as_mut().and_then(|p_msg| {
+            p_msg.buffers_mut().control.take().map(|b| {
+                b.into_bytes_unchecked()
+            })
+        })
+    }
 }
 
 impl IoBytesMutVecRecovery for IoRecvMsgData {
@@ -213,6 +221,14 @@ impl IoBytesMutVecRecovery for IoRecvMsgData {
             })
         }).flatten()
     }
+    
+    fn take_vec(&mut self) -> Option<Vec<BytesMut>> {
+        self.pending_msg.as_mut().and_then(|p_msg| {
+            p_msg.buffers_mut().data.take().map(|b| {
+                b.into_vec()
+            })
+        })
+    }
 }
 
 impl IoRecvMessageRecovery for IoRecvMsgData {
@@ -225,6 +241,16 @@ impl IoRecvMessageRecovery for IoRecvMsgData {
     fn into_recvmsg_buffers(mut self) -> Option<RecvMsgBuffers> {
         self.pending_msg.take().map(|p_msg| {
             unsafe { p_msg.into_buffers() }.unwrap()
+        })
+    }
+    
+    fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers> {
+        self.pending_msg.as_mut().and_then(|p_msg| {
+            let bufs = p_msg.buffers_mut();
+            Some(RecvMsgBuffers::new(
+                bufs.data.take().map(|b| b.into_vec()),
+                bufs.control.take().map(|b| b.into_bytes_unchecked()),
+            ))
         })
     }
 }
