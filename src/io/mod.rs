@@ -1,6 +1,5 @@
 use std::ffi::NulError;
 
-use buffers::RecvMsgBuffersRefs;
 use bytes::BytesMut;
 use enum_dispatch::enum_dispatch;
 use failure::IoFailure;
@@ -76,6 +75,7 @@ pub use buffers::EmptyVectoredOutputBufferError;
 pub use buffers::InvalidIoInputBufferError;
 pub use buffers::InvalidIoVecError;
 pub use buffers::RecvMsgBuffers;
+pub use buffers::RecvMsgBuffersRefs;
 pub use buffers::RecvMsgSubmissionError;
 pub use buffers::EmptySingleVectoredInputBufferError;
 
