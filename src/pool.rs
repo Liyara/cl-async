@@ -15,7 +15,7 @@ use crate::{
         work_sender::SendToWorkerChannelError, 
         Message,
         WorkerHandle, 
-        WorkerIOSubmissionHandle, 
+        WorkerIoSubmissionHandle, 
         WorkerInitializationError, 
         WorkerStartError, 
         WorkerState
@@ -235,7 +235,7 @@ impl ThreadPool {
         &'static self,
         operation: IoOperation, 
         waker: Option<std::task::Waker>
-    ) -> Result<WorkerIOSubmissionHandle, WorkerDispatchError<IoOperation>> {
+    ) -> Result<WorkerIoSubmissionHandle, WorkerDispatchError<IoOperation>> {
 
         let worker = match self.get_next_worker() {
             Ok(worker) => worker,

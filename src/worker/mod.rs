@@ -38,11 +38,7 @@ use crate::{
         EventSource, 
         EventType
     }, io::{
-        IoCompletionQueue, 
-        IoCompletionResult, 
-        IoContext, IoContextError, 
-        IoOperation, IoSubmission, 
-        IoSubmissionQueue
+        IoCompletionQueue, IoCompletionResult, IoContext, IoContextError, IoOperation, IoSubmission, IoSubmissionError, IoSubmissionQueue
     }, 
     notifications::{
         self, 
@@ -186,12 +182,12 @@ pub enum WorkerError {
     WorkerRuntimeError(#[from] WorkerRuntimeError),
 }
 
-pub struct WorkerIOSubmissionHandle {
+pub struct WorkerIoSubmissionHandle {
     pub key: Key,
     pub completion_queue: IoCompletionQueue,
 }
 
-impl WorkerIOSubmissionHandle {
+impl WorkerIoSubmissionHandle {
     
     fn new(key: Key, completion_queue: IoCompletionQueue) -> Self {
         Self { key, completion_queue }
@@ -202,6 +198,17 @@ impl WorkerIOSubmissionHandle {
         cx: &mut std::task::Context<'_>
     ) -> Poll<Option<IoCompletionResult>> {
         self.completion_queue.poll(self.key, cx)
+    }
+
+    pub fn cancel(
+        self
+    ) -> Result<(), IoSubmissionError> {
+        crate::submit_io_operation(
+            IoOperation::cancel_forget(self.key),
+            None
+        )?;
+
+        Ok(())
     }
 }
 
@@ -331,9 +338,9 @@ impl Worker {
         &self,
         operation: IoOperation, 
         waker: Option<std::task::Waker>
-    ) -> Result<WorkerIOSubmissionHandle, SendToWorkerChannelError> {
+    ) -> Result<WorkerIoSubmissionHandle, SendToWorkerChannelError> {
         let key = self.io_submission_queue.submit(operation, waker)?;
-        Ok(WorkerIOSubmissionHandle::new(key, self.io_completion_queue.clone()))
+        Ok(WorkerIoSubmissionHandle::new(key, self.io_completion_queue.clone()))
     }
 
     pub fn as_handle(&self) -> WorkerHandle {

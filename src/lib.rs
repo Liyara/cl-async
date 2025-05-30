@@ -111,7 +111,7 @@ pub fn num_threads() -> usize { pool().num_threads() }
 pub fn submit_io_operation(
     operation: io::IoOperation, 
     waker: Option<std::task::Waker>
-) -> std::result::Result<worker::WorkerIOSubmissionHandle, WorkerDispatchError<io::IoOperation>> {
+) -> std::result::Result<worker::WorkerIoSubmissionHandle, WorkerDispatchError<io::IoOperation>> {
     Ok(pool().submit_io_operation(operation, waker)?)
 }
 

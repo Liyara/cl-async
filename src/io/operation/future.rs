@@ -2,11 +2,11 @@ use std::{os::fd::AsRawFd, task::Poll};
 
 use bytes::{Bytes, BytesMut};
 
-use crate::{io::{completion::TryFromCompletion, message::IoRecvMessage, IoCompletion, IoError, IoOperation, IoProcessingError, IoSubmissionError}, worker::WorkerIOSubmissionHandle};
+use crate::{io::{completion::TryFromCompletion, message::IoRecvMessage, IoCompletion, IoError, IoOperation, IoProcessingError, IoSubmissionError}, worker::WorkerIoSubmissionHandle};
 
 pub struct IoOperationFuture<T: TryFromCompletion> {
     operation: Option<IoOperation>,
-    handle: Option<WorkerIOSubmissionHandle>,
+    handle: Option<WorkerIoSubmissionHandle>,
     _marker: std::marker::PhantomData<T>
 }
 
@@ -62,6 +62,16 @@ impl<T: std::marker::Unpin + TryFromCompletion> Future for IoOperationFuture<T> 
                         ).into()))
                     }
                 }
+            }
+        }
+    }
+}
+
+impl<T: TryFromCompletion> Drop for IoOperationFuture<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            if let Err(e) = handle.cancel() {
+                warn!("cl-async: IoOperationFuture: Failed to cancel operation: {e}");
             }
         }
     }
