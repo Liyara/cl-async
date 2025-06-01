@@ -236,9 +236,7 @@ pub struct EmptySingleVectoredInputBufferError {
 
 #[derive(Debug, Error)]
 #[error("The input buffer is empty.")]
-pub struct EmptyVectoredInputBufferError {
-    pub buffer: Arc<Vec<Bytes>>,
-}
+pub struct EmptyVectoredInputBufferError {}
 
 #[derive(Debug)]
 // Represents a non-contiguous, immutable buffer for writing from.
@@ -256,7 +254,7 @@ impl IoVecInputBuffer {
 
     pub fn new_multiple(data: Arc<Vec<Bytes>>) -> Result<Self, EmptyVectoredInputBufferError> {
         if data.is_empty() {
-            return Err(EmptyVectoredInputBufferError { buffer: data });
+            return Err(EmptyVectoredInputBufferError {});
         }
 
         Ok(Self(IoVecInputSource::Multiple(data)))
@@ -345,10 +343,6 @@ impl IoVecInputBuffer {
             IoVecInputSource::Multiple(vec) => vec,
         }
     }
-
-    /*
-        SAFETY: The caller must ensure that the source type is `Multiple`.
-    */
 
     /*
         SAFETY: The caller must ensure that the source type is `Multiple`.
@@ -757,28 +751,8 @@ pub enum InputBufferVecSubmissionError {
 
     #[error("The provided input buffers generated an invalid iovec: {source}")]
     InvalidIoVec {
-
-        buffer: Arc<Vec<Bytes>>,
-
         #[source]
         source: InvalidIoVecError,
-    }
-}
-
-impl InputBufferVecSubmissionError {
-
-    pub fn as_buffers(&self) -> &Vec<Bytes> {
-        match self {
-            InputBufferVecSubmissionError::InvalidIoVecInputBuffer(e) => &e.buffer,
-            InputBufferVecSubmissionError::InvalidIoVec { buffer, .. } => buffer,
-        }
-    }
-
-    pub fn into_buffers(self) -> Arc<Vec<Bytes>> {
-        match self {
-            InputBufferVecSubmissionError::InvalidIoVecInputBuffer(e) => e.buffer,
-            InputBufferVecSubmissionError::InvalidIoVec { buffer, .. } => buffer,
-        }
     }
 }
 

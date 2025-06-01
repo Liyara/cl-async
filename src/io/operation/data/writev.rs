@@ -28,7 +28,6 @@ impl IoWritevDataInner {
                 } else {
                     IoSubmissionError::from(
                         InputBufferVecSubmissionError::InvalidIoVec {
-                            buffer: unsafe { _iovec.into_vec() },
                             source: e,
                         }
                     )
