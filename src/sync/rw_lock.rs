@@ -1,6 +1,6 @@
 use std::{cell::UnsafeCell, num::NonZeroUsize, ops::{Deref, DerefMut}};
 
-use crate::sync::semaphore::{Permit, Semaphore};
+use crate::sync::semaphore::{Permit, SemaphoreInner};
 
 pub struct ReadGuard<'a, T> {
     data: &'a T,
@@ -42,7 +42,7 @@ unsafe impl<T: Sync> Sync for WriteGuard<'_, T> {}
 
 pub struct RwLock<T> {
     max_permits: usize,
-    semaphore: Semaphore,
+    semaphore: SemaphoreInner,
     data: UnsafeCell<T>
 }
 
@@ -62,13 +62,13 @@ impl<T> RwLock<T> {
         let max_readers = max_readers.get();
         Self {
             max_permits: max_readers,
-            semaphore: Semaphore::new(max_readers),
+            semaphore: SemaphoreInner::new(max_readers),
             data: UnsafeCell::new(data),
         }
     }
 
     pub async fn read<'a>(&'a self) -> ReadGuard<'a, T> {
-        let permit = self.semaphore.acquire().await;
+        let permit = self.semaphore.acquire(1).await;
         ReadGuard {
             data: unsafe { &*self.data.get() },
             _pemit: permit
@@ -76,7 +76,7 @@ impl<T> RwLock<T> {
     }
 
     pub async fn write<'a>(&'a self) -> WriteGuard<'a, T> {
-        let permit = unsafe { self.semaphore.acquire_hungry_unchecked(self.max_permits) }.await;
+        let permit = self.semaphore.acquire_hungry(self.max_permits).await;
         WriteGuard {
             data: unsafe { &mut *self.data.get() },
             _pemit: permit

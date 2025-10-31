@@ -296,4 +296,12 @@ impl SemaphoreInner {
             }
         }
     }
+
+    pub fn acquire(&self, n: usize) -> SemaphoreFuture<'_> {
+        SemaphoreFuture::new(self, n)
+    }
+
+    pub fn acquire_hungry(&self, n: usize) -> SemaphoreFuture<'_> {
+        SemaphoreFuture::new_hungry(self, n)
+    }
 }
