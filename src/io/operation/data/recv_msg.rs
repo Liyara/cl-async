@@ -232,7 +232,7 @@ impl IoBytesMutVecRecovery for IoRecvMsgData {
 }
 
 impl IoRecvMessageRecovery for IoRecvMsgData {
-    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs> {
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs<'_>> {
         self.pending_msg.as_ref().map(|p_msg| {
             p_msg.buffers().as_raw()
         })

@@ -497,7 +497,7 @@ impl RecvMsgBuffers {
         })
     }
 
-    pub fn refs(&self) -> RecvMsgBuffersRefs {
+    pub fn refs(&self) -> RecvMsgBuffersRefs<'_> {
         RecvMsgBuffersRefs::new(self.data.as_ref(), self.control.as_ref())
     }
 }
@@ -550,7 +550,7 @@ pub struct IoRecvMsgOutputBuffers {
 
 impl IoRecvMsgOutputBuffers {
 
-    pub fn as_raw(&self) -> RecvMsgBuffersRefs {
+    pub fn as_raw(&self) -> RecvMsgBuffersRefs<'_> {
         let data = self.data.as_ref().map(|b| b.as_vec());
         let control = self.control.as_ref().map(|b| b.as_bytes());
         RecvMsgBuffersRefs::new(data, control)

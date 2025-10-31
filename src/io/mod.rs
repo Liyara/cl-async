@@ -101,7 +101,7 @@ pub trait IoBytesMutVecRecovery {
 
 #[enum_dispatch]
 pub trait IoRecvMessageRecovery {
-    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs>;
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs<'_>>;
     fn into_recvmsg_buffers(self) -> Option<RecvMsgBuffers>;
     fn take_recvmsg_buffers(&mut self) -> Option<RecvMsgBuffers>;
 }
@@ -360,7 +360,7 @@ impl IoBytesMutVecRecovery for IoSubmissionError {
 }
 
 impl IoRecvMessageRecovery for IoSubmissionError {
-    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs> {
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs<'_>> {
         match self {
             IoSubmissionError::FailedToDispatchOperation(e) => match e {
                 WorkerDispatchError::FailedToFindWorker {payload, .. } => {
@@ -486,7 +486,7 @@ impl IoBytesMutVecRecovery for IoOperationError {
 }
 
 impl IoRecvMessageRecovery for IoOperationError {
-    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs> {
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs<'_>> {
         match &self.failure {
             IoFailure::Msg(data) => Some(data.buffers.refs()),
             _ => None,
@@ -602,7 +602,7 @@ impl IoBytesMutVecRecovery for IoError {
 
 impl IoRecvMessageRecovery for IoError {
 
-    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs> {
+    fn as_recvmsg_buffers(&self) -> Option<RecvMsgBuffersRefs<'_>> {
         match self {
             IoError::Submission(e) => e.as_recvmsg_buffers(),
             IoError::Operation(e) => e.as_recvmsg_buffers(),
