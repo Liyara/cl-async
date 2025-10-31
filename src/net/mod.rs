@@ -36,6 +36,9 @@ pub use tcp_stream::TcpConnectionError;
 pub use tcp_server::TcpServer;
 pub use tcp_server::TcpServerInitError;
 
+pub type ListeningTcpListener = TcpListener<TcpListenerStateListening>;
+pub type ListeningTcpServer = TcpServer<ListeningTcpListener>;
+
 #[derive(Debug, Clone, Copy, Error)]
 #[error("C Socket Extended Error: {errno}, origin: {origin}, type: {type_}, code: {code}, pad: {pad}, info: {info}, data: {data}")]
 pub struct CSockExtendedError {

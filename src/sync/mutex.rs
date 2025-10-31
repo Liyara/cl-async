@@ -99,7 +99,17 @@ impl<T> Future for MutexFuture<T> {
     type Output = MutexGuard<T>;
     
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        
         let this = self.as_mut().get_mut();
+
+        fn check_lock<T>(inner: &Arc<MutexInner<T>>) -> bool {
+            inner.locked.compare_exchange(
+                false, 
+                true, 
+                std::sync::atomic::Ordering::Acquire, 
+                std::sync::atomic::Ordering::Relaxed
+            ).is_ok()
+        }
 
         /*
             SAFETY:
@@ -109,17 +119,19 @@ impl<T> Future for MutexFuture<T> {
         let inner = this.inner.as_ref().unwrap();
 
         // First, check if the mutex is already locked.
-        if inner.locked.compare_exchange(
-            false, 
-            true, 
-            std::sync::atomic::Ordering::Acquire, 
-            std::sync::atomic::Ordering::Relaxed
-        ).is_ok() {
+        if check_lock(inner) {
             return Poll::Ready(MutexGuard::new(this.inner.take().unwrap()));
         }
 
         // If the mutex is locked, we need to queue the current task.
         inner.waker_queue.push(cx.waker().clone());
+
+        // Lost wakeup avoidance: check again
+        if check_lock(inner) {
+            // May result in a spurious wakeup, acceptable.
+            return Poll::Ready(MutexGuard::new(this.inner.take().unwrap()));
+        }
+
         Poll::Pending
     }
     
