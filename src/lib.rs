@@ -68,6 +68,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 static POOL: OnceCell<ThreadPool> = OnceCell::new();
 
+#[inline]
 fn pool() -> &'static ThreadPool {
     POOL.get_or_init(|| {
         ThreadPool::new(num_cpus::get())
@@ -89,25 +90,31 @@ pub fn init(n_threads: usize) -> Result<()> {
 }
 
 // Schedules a new task to be executed by the thread pool.
+#[inline]
 pub fn spawn<F>(fut: F) -> std::result::Result<(), SpawnTaskError>
 where
     F: std::future::Future<Output = ()> + Send + 'static
 { Ok(pool().spawn(Task::new(fut))?) }
 
 // Blocks the current thread until all pool threads have been stopped.
+#[inline]
 pub fn join() { pool().join() }
 
 // Gracefully stops all threads in the pool, allowing all tasks to finish.
+#[inline]
 pub fn shutdown() { pool().shutdown() }
 
 // Immediately stops all threads in the pool, ignoring all tasks.
+#[inline]
 pub fn kill() { pool().kill() }
 
 // Returns the number of threads in the pool.
 // This should always equal the number of CPUs.
+#[inline]
 pub fn num_threads() -> usize { pool().num_threads() }
 
 // Submits an I/O operation to the pool.
+#[inline]
 pub fn submit_io_operation(
     operation: io::IoOperation, 
     waker: Option<std::task::Waker>
@@ -115,6 +122,7 @@ pub fn submit_io_operation(
     Ok(pool().submit_io_operation(operation, waker)?)
 }
 
+#[inline]
 pub fn register_event_source<F, Fut>(
     source: events::EventSource,
     interest_type: events::InterestType,
@@ -125,22 +133,27 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static
 { Ok(pool().register_event_source(source, interest_type, handler)?) }
 
+#[inline]
 pub fn sleep(duration: std::time::Duration) -> timing::futures::SleepFuture {
     timing::futures::SleepFuture::new(duration)
 }
 
+#[inline]
 pub fn get_worker_handle(id: usize) -> Option<worker::WorkerHandle> {
     pool().get_worker_handle(id)
 }
 
+#[inline]
 pub fn next_worker_id() -> usize {
     pool().next_worker_id()
 }
 
+#[inline]
 pub fn notify_on(
     flags: notifications::NotificationFlags,
 ) -> std::result::Result<notifications::Subscription, NextWorkerError> {
     Ok(pool().notify_on(flags)?)
 }
 
+#[inline]
 pub async fn yield_now() { r#yield::YieldFuture::new().await }

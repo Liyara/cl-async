@@ -1,5 +1,4 @@
 use std::sync::atomic::AtomicUsize;
-use dashmap::DashMap;
 use thiserror::Error;
 
 use crate::{
@@ -108,7 +107,7 @@ pub enum PoolError {
 
 pub struct ThreadPool {
     n_threads: usize,
-    workers: DashMap<usize, Worker>,
+    workers: Vec<Worker>
 }
 
 impl ThreadPool {
@@ -117,10 +116,11 @@ impl ThreadPool {
 
         Self { 
             n_threads, 
-            workers: DashMap::new()
+            workers: Vec::new()
         }
     }
 
+    #[inline]
     pub fn next_worker_id(&'static self) -> usize {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -129,18 +129,11 @@ impl ThreadPool {
 
     fn get_next_worker(
         &'static self
-    ) -> Result<dashmap::mapref::one::RefMut<'static, usize, Worker>, NextWorkerError> {
+    ) -> Result<&'static Worker, NextWorkerError> {
         for _ in 0..self.n_threads {
             
             let next_worker_id = self.next_worker_id();
-
-            let worker = match self.workers.get_mut(
-                &next_worker_id
-            ) {
-                Some(worker) => worker,
-                None => continue
-            };
-
+            let worker = self.workers.get(next_worker_id).ok_or(NextWorkerError)?;
             let state = worker.get_state();
 
             if 
@@ -176,7 +169,7 @@ impl ThreadPool {
     }
 
     pub fn get_worker_handle(&'static self, id: usize) -> Option<WorkerHandle> {
-        let worker = self.workers.get(&id);
+        let worker = self.workers.get(id);
         worker.map(|w| w.as_handle())
     }
 
@@ -249,7 +242,7 @@ impl ThreadPool {
         Ok(worker.submit_io_operation(operation, waker)?)
     }
 
-    pub fn start(self) -> Result<Self, PoolStartError> {
+    pub fn start(mut self) -> Result<Self, PoolStartError> {
         info!("cl-async: Starting {} workers", self.n_threads);
         for i in 0..self.n_threads {
             let mut worker = Worker::new(i)?;
@@ -279,15 +272,14 @@ impl ThreadPool {
     }
 
     fn join_single(&'static self, i: &usize)  {
-        let mut worker_guard = match self.workers.get_mut(&i) {
+        let worker = match self.workers.get(*i) {
             Some(worker) => worker,
             None => {
                 warn!("cl-async: Worker {i} not found");
                 return;
             }
         };
-        let handle = worker_guard.take_join_handle();
-        drop(worker_guard);
+        let handle = worker.take_join_handle();
         if let Some(handle) = handle {
             handle.join().unwrap_or_else(|_| {
                 warn!("cl-async: Failed to join worker {i}");

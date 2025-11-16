@@ -247,7 +247,7 @@ struct WorkerTempData {
 pub struct Worker {
     id: usize,
     state: Arc<AtomicU8>,
-    handle: Option<JoinHandle<()>>,
+    handle: Mutex<Option<JoinHandle<()>>>,
     sender: WorkSender,
     event_registry: EventPollerRegistry,
     queue_registry: EventQueueRegistry,
@@ -305,7 +305,7 @@ impl Worker {
         Ok(Self {
             id,
             state: Arc::new(AtomicU8::new(WorkerState::None as u8)),
-            handle: None,
+            handle: Mutex::new(None),
             sender,
             event_registry,
             queue_registry,
@@ -330,10 +330,16 @@ impl Worker {
         })
     }
 
+    #[inline]
     pub fn event_registry(&self) -> &EventPollerRegistry { &self.event_registry }
+
+    #[inline]
     pub fn queue_registry(&self) -> &EventQueueRegistry { &self.queue_registry }
+
+    #[inline]
     pub fn id(&self) -> usize { self.id }
 
+    #[inline]
     pub fn submit_io_operation(
         &self,
         operation: IoOperation, 
@@ -343,6 +349,7 @@ impl Worker {
         Ok(WorkerIoSubmissionHandle::new(key, self.io_completion_queue.clone()))
     }
 
+    #[inline]
     pub fn as_handle(&self) -> WorkerHandle {
         WorkerHandle {
             id: self.id,
@@ -355,6 +362,7 @@ impl Worker {
         }
     }
 
+    #[inline]
     pub fn notify_on(
         &self, 
         flags: NotificationFlags
@@ -381,7 +389,7 @@ impl Worker {
             None => return Err(WorkerStartError::temp_data_unavailable(self.id))
         };
 
-        self.handle = Some(std::thread::spawn(move || {
+        *self.handle.lock() = Some(std::thread::spawn(move || {
             info!("cl-async: Worker {} starting", id);
             if let Err(e) = Self::worker_loop(
                 id,
@@ -410,33 +418,33 @@ impl Worker {
         Ok(())
     }
 
+    #[inline]
     fn set_state(state_u8: &AtomicU8, state: WorkerState) {
         state_u8.store(state as u8, Ordering::Release);
     }
 
+    #[inline]
     fn _get_state(state_u8: &AtomicU8) -> WorkerState {
         state_u8.load(Ordering::Acquire).into()
     }
 
+    #[inline]
     pub fn get_state(&self) -> WorkerState {
         Self::_get_state(&self.state)
     }
 
+    #[inline]
     fn _is_state(state_u8: &AtomicU8, state: WorkerState) -> bool {
         state_u8.load(Ordering::Acquire) == state as u8
     }
 
-    pub fn is_state(&self, state: WorkerState) -> bool {
-        Self::_is_state(&self.state, state)
-    }
-
+    #[inline]
     pub fn is_running(&self) -> bool {
-        self.handle.is_some() && !(
-            self.is_state(WorkerState::None) ||
-            self.is_state(WorkerState::Stopped)
-        )
+        let state = self.get_state();
+        !matches!(state, WorkerState::None | WorkerState::Stopped)
     }
 
+    #[inline]
     pub fn kill(&self) -> Result<(), WorkerStopError> {
         if !self.is_running() { return Err(WorkerStopError::not_running(self.id)) }
         self.sender.send_message(Message::Kill).map_err(|e| {
@@ -445,6 +453,7 @@ impl Worker {
         Ok(())
     }
 
+    #[inline]
     pub fn shutdown(&self) -> Result<(), WorkerStopError> {
         if !self.is_running() { return Err(WorkerStopError::not_running(self.id)) }
         self.sender.send_message(Message::Shutdown).map_err(|e| {
@@ -453,12 +462,14 @@ impl Worker {
         Ok(())
     }
 
+    #[inline]
     pub fn spawn(&self, task: Task) -> Result<(), SendToWorkerChannelError> {
         Ok(self.sender.send_message(Message::SpawnTask(task))?)
     }
     
-    pub fn take_join_handle(&mut self) -> Option<JoinHandle<()>> {
-        self.handle.take()
+    #[inline]
+    pub fn take_join_handle(&self) -> Option<JoinHandle<()>> {
+        self.handle.lock().take()
     }
 
     unsafe fn block_async_signals() -> Result<RawFd, OsError> {
@@ -481,6 +492,7 @@ impl Worker {
         Ok(sfd)
     }
 
+    #[inline]
     fn broadcast_notification(
         notification_sender: &async_broadcast::Sender<Notification>,
         notification: Notification
@@ -489,6 +501,7 @@ impl Worker {
         Ok(())
     }
 
+    #[inline]
     fn prepare_io_submission(
         io_context: &mut IoContext,
         submission: IoSubmission,

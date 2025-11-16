@@ -49,6 +49,7 @@ fn sem_fut<F: FnOnce(usize) -> P, P>(
                 std::sync::atomic::Ordering::Acquire,
             ) {
                 Ok(_) => return Poll::Ready(f(desired_permits)),
+                Err(_) if queued => {},
                 Err(_) => continue, // Some spinning may occur
             }
         }
@@ -62,6 +63,7 @@ fn sem_fut<F: FnOnce(usize) -> P, P>(
                     std::sync::atomic::Ordering::Acquire,
                 ) {
                     Ok(n) => *count += n,
+                    Err(_) if queued => {},
                     Err(_) => continue, // Some spinning may occur
                 }
             }

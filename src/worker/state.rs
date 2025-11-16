@@ -20,7 +20,7 @@ impl From<u8> for WorkerState {
             3 => WorkerState::Busy,
             4 => WorkerState::Stopping,
             5 => WorkerState::Stopped,
-            _ => unreachable!(),
+            _ => unsafe { std::hint::unreachable_unchecked() }
         }
     }
 }
