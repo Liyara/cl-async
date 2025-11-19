@@ -2,7 +2,6 @@
 #![feature(associated_type_defaults)]
 
 use once_cell::sync::OnceCell;
-use pool::{NextWorkerError, SpawnTaskError, WorkerDispatchError};
 use thiserror::Error;
 
 #[macro_use]
@@ -34,6 +33,12 @@ pub (crate) use pool::ThreadPool;
 pub use os_error::OsError;
 pub use atomic_owned_fd::AtomicOwnedFd;
 
+pub use pool::NextWorkerError;
+pub use pool::PoolError;
+pub use pool::PoolStartError;
+pub use pool::SpawnTaskError;
+pub use pool::SpawnTaskErrorKind;
+pub use pool::WorkerDispatchError;
 
 #[derive(Debug, Error)]
 pub enum Error {
