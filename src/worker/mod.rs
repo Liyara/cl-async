@@ -46,7 +46,7 @@ use crate::{
         NotificationFlags, 
         Signal
     }, 
-    task::Executor, 
+    task::{task_factory::box_task_factory, Executor, LocalTask}, 
     Key, 
     OsError, 
     Task
@@ -237,10 +237,10 @@ impl WorkerHandle {
 struct WorkerTempData {
     receiver: crossbeam_channel::Receiver<Message>,
     poller: EventPoller,
-    executor: Executor,
     io_context: IoContext,
     message_channel_key_and_receiver: (Key, EventChannelReceiver),
     io_channel_key_and_receiver: (Key, EventChannelReceiver),
+    work_sender: WorkSender,
     notification_sender: async_broadcast::Sender<Notification>,
 }
 
@@ -272,7 +272,6 @@ impl Worker {
         ).map_err(|e| {
             WorkerInitializationError::MessageChannelPollerRegistrationError(e)
         })?;
-        let executor = Executor::new(sender.clone());
         
         let mut io_context = IoContext::new(256).map_err(|e| {
             WorkerInitializationError::IoContextCreationError(e)
@@ -302,6 +301,8 @@ impl Worker {
             notification_receiver
         ) = async_broadcast::broadcast(128);
 
+        let wsender = sender.clone();
+
         Ok(Self {
             id,
             state: Arc::new(AtomicU8::new(WorkerState::None as u8)),
@@ -316,7 +317,7 @@ impl Worker {
                 receiver: rx,
                 poller,
                 io_context,
-                executor,
+                work_sender: wsender,
                 message_channel_key_and_receiver: (
                     message_channel_key,
                     message_channel.as_receiver()
@@ -395,10 +396,10 @@ impl Worker {
                 id,
                 Arc::clone(&state),
                 temp_data.poller,
-                temp_data.executor,
                 temp_data.receiver,
                 queue_registry.clone(),
                 temp_data.io_context,
+                temp_data.work_sender,
                 temp_data.message_channel_key_and_receiver,
                 temp_data.io_channel_key_and_receiver,
                 temp_data.notification_sender.clone()
@@ -466,6 +467,16 @@ impl Worker {
     pub fn spawn(&self, task: Task) -> Result<(), SendToWorkerChannelError> {
         Ok(self.sender.send_message(Message::SpawnTask(task))?)
     }
+
+    #[inline]
+    pub fn spawn_with<T>(&self, factory: T) -> Result<(), SendToWorkerChannelError> 
+    where
+        T: crate::task::TaskFactory
+    {
+        Ok(self.sender.send_message(
+            Message::SpawnTaskFromFactory(box_task_factory(factory))
+        )?)
+    }
     
     #[inline]
     pub fn take_join_handle(&self) -> Option<JoinHandle<()>> {
@@ -517,15 +528,16 @@ impl Worker {
         id: usize,
         state: Arc<AtomicU8>,
         mut poller: EventPoller,
-        mut executor: Executor,
         rx: crossbeam_channel::Receiver<Message>,
         queue_registry: EventQueueRegistry,
         mut io_context: IoContext,
+        work_sender: WorkSender,
         message_channel_key_and_receiver: (Key, EventChannelReceiver),
         io_channel_key_and_receiver: (Key, EventChannelReceiver),
         notification_sender: async_broadcast::Sender<Notification>
     ) -> Result<(), WorkerRuntimeError> {
 
+        let mut executor = Executor::new(work_sender);
         let mut events: Vec<Event> = Vec::with_capacity(1024);
         let mut queues_to_wake = VecDeque::new();
         let mut should_recv: bool;
@@ -690,11 +702,14 @@ impl Worker {
             if should_recv {
                 while let Ok(msg) = rx.try_recv() {
                     match msg {
+                        Message::SpawnTaskFromFactory(factory) => {
+                            executor.spawn(LocalTask::new(factory.create_task_boxed()))
+                        }
                         Message::SpawnTask(task) => {
-                            executor.spawn(task);
+                            executor.spawn(task.into_local());
                         }
                         Message::SpawnTasks(tasks) => {
-                            for task in tasks { executor.spawn(task) }
+                            for task in tasks { executor.spawn(task.into_local()) }
                         }
                         Message::WakeTask(task_id) => executor.wake_task(task_id),
                         Message::SubmitIO(submission) => {
@@ -794,11 +809,14 @@ impl Worker {
         loop {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
+                    Message::SpawnTaskFromFactory(factory) => {
+                        executor.spawn(LocalTask::new(factory.create_task_boxed()))
+                    }
                     Message::SpawnTask(task) => {
-                        executor.spawn(task);
+                        executor.spawn(task.into_local());
                     }
                     Message::SpawnTasks(tasks) => {
-                        for task in tasks { executor.spawn(task) }
+                        for task in tasks { executor.spawn(task.into_local()) }
                     }
                     Message::WakeTask(task_id) => executor.wake_task(task_id),
                     Message::SubmitIO(submission) => {

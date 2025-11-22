@@ -2,14 +2,14 @@ use rustc_hash::FxHashMap;
 use crate::worker::WorkSender;
 
 use super::{
-    Task, 
+    LocalTask, 
     TaskId,
     TaskWaker
 };
 
 pub struct Executor {
-    ready_tasks: crossbeam_deque::Worker<Task>,
-    running_tasks: FxHashMap<TaskId, Task>,
+    ready_tasks: crossbeam_deque::Worker<LocalTask>,
+    running_tasks: FxHashMap<TaskId, LocalTask>,
     waker_cache: FxHashMap<TaskId, std::task::Waker>,
     tx: WorkSender,
 }
@@ -24,7 +24,7 @@ impl Executor {
         }
     }
 
-    pub fn spawn(&mut self, task: Task) {
+    pub fn spawn(&mut self, task: LocalTask) {
         self.ready_tasks.push(task);
     }
 
@@ -49,7 +49,7 @@ impl Executor {
         !self.running_tasks.is_empty()
     }
 
-    fn run_task(&mut self, mut task: Task) {
+    fn run_task(&mut self, mut task: LocalTask) {
         let task_id = task.id;
         
         let waker = self.waker_cache.entry(task_id).or_insert_with(|| 

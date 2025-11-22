@@ -7,20 +7,9 @@ use crate::{
         EventQueue, 
         EventReceiver, 
         EventSource
-    }, 
-    io::IoOperation, 
-    notifications::NotificationFlags, 
-    worker::{
-        work_sender::SendToWorkerChannelError, 
-        Message,
-        WorkerHandle, 
-        WorkerIoSubmissionHandle, 
-        WorkerInitializationError, 
-        WorkerStartError, 
-        WorkerState
-    }, 
-    Task, 
-    Worker
+    }, io::IoOperation, notifications::NotificationFlags, task::task_factory::{box_task_factory, BoxTaskFactory}, worker::{
+        work_sender::SendToWorkerChannelError, Message, WorkerHandle, WorkerInitializationError, WorkerIoSubmissionHandle, WorkerStartError, WorkerState
+    }, Task, Worker
 };
 
 #[derive(Debug, Error)]
@@ -34,6 +23,24 @@ pub enum SpawnTaskErrorKind {
 
     #[error("Failed to send task to worker")]
     FailedToSendTask,
+}
+
+#[derive(Error)]
+#[error("Failed to spawn from factory: {kind}")]
+pub struct SpawnTaskWithError {
+    pub factory: BoxTaskFactory,
+
+    #[source]
+    pub kind: SpawnTaskErrorKind,
+}
+
+impl std::fmt::Debug for SpawnTaskWithError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnTaskWithError")
+            .field("factory", &"BoxTaskFactory")
+            .field("kind", &self.kind)
+            .finish()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -166,6 +173,33 @@ impl ThreadPool {
 
         Ok(())
                 
+    }
+
+    pub fn spawn_with<T>(&'static self, factory: T) -> std::result::Result<(), SpawnTaskWithError>
+    where
+        T: crate::task::TaskFactory
+    {
+        let worker = match self.get_next_worker() {
+            Ok(worker) => worker,
+            Err(_) => return Err(SpawnTaskWithError {
+                factory: box_task_factory(factory),
+                kind: SpawnTaskErrorKind::FailedToGetWorker(NextWorkerError)
+            })
+        };
+
+        if let Err(e) = worker.spawn_with(factory) {
+            match e.into_message() {
+                Message::SpawnTaskFromFactory(factory) => {
+                    return Err(SpawnTaskWithError {
+                        factory,
+                        kind: SpawnTaskErrorKind::FailedToSendTask
+                    });
+                },
+                _ => unreachable!()
+            }
+        }
+
+        Ok(())
     }
 
     pub fn get_worker_handle(&'static self, id: usize) -> Option<WorkerHandle> {

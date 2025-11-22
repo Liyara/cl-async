@@ -37,6 +37,7 @@ pub use pool::NextWorkerError;
 pub use pool::PoolError;
 pub use pool::PoolStartError;
 pub use pool::SpawnTaskError;
+pub use pool::SpawnTaskWithError;
 pub use pool::SpawnTaskErrorKind;
 pub use pool::WorkerDispatchError;
 
@@ -100,6 +101,16 @@ pub fn spawn<F>(fut: F) -> std::result::Result<(), SpawnTaskError>
 where
     F: std::future::Future<Output = ()> + Send + 'static
 { Ok(pool().spawn(Task::new(fut))?) }
+
+
+#[inline]
+pub fn spawn_with<T>(factory: T) -> std::result::Result<(), SpawnTaskWithError>
+where
+    T: crate::task::TaskFactory
+{
+    Ok(pool().spawn_with(factory)?)
+}
+
 
 // Blocks the current thread until all pool threads have been stopped.
 #[inline]
