@@ -10,7 +10,7 @@ use crate::{io::{
     operation::future::{
         IoOperationFuture, IoVoidFuture, __async_impl_copyable__, __async_impl_receiver__, __async_impl_sender__, __async_impl_types__
     }, IoError, IoOperation, OwnedFdAsync
-}, OsError};
+}, task::TaskSpawner, OsError};
 
 use super::{
     AddressRetrievalError, IpVersion, LocalAddress, PeerAddress, SocketConfigurable, SocketOption
@@ -171,3 +171,39 @@ __async_impl_sender__!(TcpStream);
 __async_impl_copyable__!(TcpStream);
 
 pub type IoAcceptFuture = IoOperationFuture<crate::net::TcpStream>;
+
+pub trait TcpStreamHandler: Send + 'static {
+    type Fut: std::future::Future<Output = ()> + 'static;
+    fn call(&self, stream: TcpStream) -> Self::Fut;
+}
+
+impl<F, Fut> TcpStreamHandler for F
+where
+    F: Fn(TcpStream) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    type Fut = Fut;
+
+    fn call(&self, stream: TcpStream) -> Self::Fut {
+        (self)(stream)
+    }
+}
+
+pub (crate) struct TcpStreamHandlerSpawner<H> 
+where
+    H: TcpStreamHandler
+{
+    pub handler: H,
+    pub stream: TcpStream,
+}
+
+impl<H> TaskSpawner for TcpStreamHandlerSpawner<H> 
+where
+    H: TcpStreamHandler
+{
+    type Fut = H::Fut;
+
+    fn spawn_task(self) -> Self::Fut {
+        self.handler.call(self.stream)
+    }
+}

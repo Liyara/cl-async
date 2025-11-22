@@ -7,7 +7,7 @@ use crate::{
         EventQueue, 
         EventReceiver, 
         EventSource
-    }, io::IoOperation, notifications::NotificationFlags, task::task_factory::{box_task_factory, BoxTaskFactory}, worker::{
+    }, io::IoOperation, notifications::NotificationFlags, task::task_factory::{box_task_spawner, BoxTaskSpawner}, worker::{
         work_sender::SendToWorkerChannelError, Message, WorkerHandle, WorkerInitializationError, WorkerIoSubmissionHandle, WorkerStartError, WorkerState
     }, Task, Worker
 };
@@ -26,9 +26,9 @@ pub enum SpawnTaskErrorKind {
 }
 
 #[derive(Error)]
-#[error("Failed to spawn from factory: {kind}")]
+#[error("Failed to spawn from spawner: {kind}")]
 pub struct SpawnTaskWithError {
-    pub factory: BoxTaskFactory,
+    pub spawner: BoxTaskSpawner,
 
     #[source]
     pub kind: SpawnTaskErrorKind,
@@ -37,7 +37,7 @@ pub struct SpawnTaskWithError {
 impl std::fmt::Debug for SpawnTaskWithError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpawnTaskWithError")
-            .field("factory", &"BoxTaskFactory")
+            .field("spawner", &"BoxTaskSpawner")
             .field("kind", &self.kind)
             .finish()
     }
@@ -175,23 +175,23 @@ impl ThreadPool {
                 
     }
 
-    pub fn spawn_with<T>(&'static self, factory: T) -> std::result::Result<(), SpawnTaskWithError>
+    pub fn spawn_with<T>(&'static self, spawner: T) -> std::result::Result<(), SpawnTaskWithError>
     where
-        T: crate::task::TaskFactory
+        T: crate::task::TaskSpawner
     {
         let worker = match self.get_next_worker() {
             Ok(worker) => worker,
             Err(_) => return Err(SpawnTaskWithError {
-                factory: box_task_factory(factory),
+                spawner: box_task_spawner(spawner),
                 kind: SpawnTaskErrorKind::FailedToGetWorker(NextWorkerError)
             })
         };
 
-        if let Err(e) = worker.spawn_with(factory) {
+        if let Err(e) = worker.spawn_with(spawner) {
             match e.into_message() {
-                Message::SpawnTaskFromFactory(factory) => {
+                Message::TaskSpawner(spawner) => {
                     return Err(SpawnTaskWithError {
-                        factory,
+                        spawner,
                         kind: SpawnTaskErrorKind::FailedToSendTask
                     });
                 },

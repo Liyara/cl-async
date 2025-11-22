@@ -14,7 +14,12 @@ pub mod task_factory;
 pub use executor::Executor;
 pub use waker::TaskWaker;
 pub use id::TaskId;
+pub use task_factory::TaskSpawner;
+pub use task_factory::BoxTaskSpawner;
+pub use task_factory::BoxedTaskSpawner;
 pub use task_factory::TaskFactory;
+pub use task_factory::TaskSpawnerFactory;
+pub use task_factory::box_task_spawner;
 
 pub struct Task {
     future: Pin<Box<dyn Future<Output = ()> + Send>>,

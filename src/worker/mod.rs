@@ -46,7 +46,7 @@ use crate::{
         NotificationFlags, 
         Signal
     }, 
-    task::{task_factory::box_task_factory, Executor, LocalTask}, 
+    task::{task_factory::box_task_spawner, Executor, LocalTask}, 
     Key, 
     OsError, 
     Task
@@ -469,12 +469,12 @@ impl Worker {
     }
 
     #[inline]
-    pub fn spawn_with<T>(&self, factory: T) -> Result<(), SendToWorkerChannelError> 
+    pub fn spawn_with<T>(&self, spawner: T) -> Result<(), SendToWorkerChannelError> 
     where
-        T: crate::task::TaskFactory
+        T: crate::task::TaskSpawner
     {
         Ok(self.sender.send_message(
-            Message::SpawnTaskFromFactory(box_task_factory(factory))
+            Message::TaskSpawner(box_task_spawner(spawner))
         )?)
     }
     
@@ -702,8 +702,8 @@ impl Worker {
             if should_recv {
                 while let Ok(msg) = rx.try_recv() {
                     match msg {
-                        Message::SpawnTaskFromFactory(factory) => {
-                            executor.spawn(LocalTask::new(factory.create_task_boxed()))
+                        Message::TaskSpawner(spawner) => {
+                            executor.spawn(LocalTask::new(spawner.create_task_boxed()))
                         }
                         Message::SpawnTask(task) => {
                             executor.spawn(task.into_local());
@@ -809,8 +809,8 @@ impl Worker {
         loop {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
-                    Message::SpawnTaskFromFactory(factory) => {
-                        executor.spawn(LocalTask::new(factory.create_task_boxed()))
+                    Message::TaskSpawner(spawner) => {
+                        executor.spawn(LocalTask::new(spawner.create_task_boxed()))
                     }
                     Message::SpawnTask(task) => {
                         executor.spawn(task.into_local());

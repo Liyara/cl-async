@@ -2,9 +2,9 @@
 
 use thiserror::Error;
 
-use crate::OsError;
+use crate::{net::tcp_stream::TcpStreamHandler, OsError};
 
-use super::{tcp_listener::{Listening, TcpListenError, TcpListenerState, WantsBind, WantsListen}, LocalAddress, SocketConfigurable, SocketOption, TcpListener, TcpStream};
+use super::{tcp_listener::{Listening, TcpListenError, TcpListenerState, WantsBind, WantsListen}, LocalAddress, SocketConfigurable, SocketOption, TcpListener};
 
 pub struct TcpServer<T: TcpListenerState = ()> {
     listeners: Vec<TcpListener<T>>,
@@ -84,13 +84,12 @@ impl TcpServer<WantsBind> {
 
 impl TcpServer<WantsListen> {
 
-    pub fn listen<F, Fut>(
+    pub fn listen<H>(
         self,
-        handler: F
+        handler: H
     ) -> Result<TcpServer<Listening>, TcpListenError> 
     where
-        F: Fn(TcpStream) -> Fut + Send + Clone + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
+        H: TcpStreamHandler + Clone
     {
         let mut listeners = Vec::with_capacity(self.listeners.len());
 

@@ -1,9 +1,9 @@
 use crate::{
-    io::IoSubmission, task::{task_factory::BoxTaskFactory, TaskId}, Task
+    io::IoSubmission, task::{task_factory::BoxTaskSpawner, TaskId}, Task
 };
 
 pub enum Message {
-    SpawnTaskFromFactory(BoxTaskFactory),
+    TaskSpawner(BoxTaskSpawner),
     SpawnTask(Task),
     SpawnTasks(Vec<Task>),
     WakeTask(TaskId),
@@ -17,7 +17,7 @@ pub enum Message {
 impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Message::SpawnTaskFromFactory(_) => f.debug_tuple("SpawnTaskFromFactory").finish(),
+            Message::TaskSpawner(_) => f.debug_tuple("TaskSpawner").finish(),
             Message::SpawnTask(task) => f.debug_tuple("SpawnTask").field(task).finish(),
             Message::SpawnTasks(tasks) => f.debug_tuple("SpawnTasks").field(tasks).finish(),
             Message::WakeTask(task_id) => f.debug_tuple("WakeTask").field(task_id).finish(),

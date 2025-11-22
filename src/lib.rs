@@ -26,7 +26,7 @@ pub mod net;
 pub mod notifications;
 
 pub use key::Key;
-pub use task::Task;
+pub use task::*;
 
 pub (crate) use worker::Worker;
 pub (crate) use pool::ThreadPool;
@@ -104,11 +104,11 @@ where
 
 
 #[inline]
-pub fn spawn_with<T>(factory: T) -> std::result::Result<(), SpawnTaskWithError>
+pub fn spawn_with<T>(into_task: T) -> std::result::Result<(), SpawnTaskWithError>
 where
-    T: crate::task::TaskFactory
+    T: crate::task::TaskSpawner
 {
-    Ok(pool().spawn_with(factory)?)
+    Ok(pool().spawn_with(into_task)?)
 }
 
 

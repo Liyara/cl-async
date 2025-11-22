@@ -4,7 +4,7 @@ use futures::FutureExt;
 use sysctl::Sysctl;
 use thiserror::Error;
 
-use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, net::PeerAddress, notifications::NotificationFlags, pool::SpawnTaskErrorKind, worker::{work_sender::SendToWorkerChannelError, WorkerHandle}, Key, OsError};
+use crate::{io::{IoCompletion, IoOperation, OwnedFdAsync}, net::{tcp_stream::{TcpStreamHandler, TcpStreamHandlerSpawner}, PeerAddress}, notifications::NotificationFlags, pool::SpawnTaskErrorKind, worker::{work_sender::SendToWorkerChannelError, WorkerHandle}, Key, OsError};
 
 use super::{IpVersion, LocalAddress, SocketConfigurable, SocketOption, TcpStream};
 
@@ -133,14 +133,13 @@ impl TcpListener<WantsListen> {
         backlog_str.parse::<i32>().map_err(|_| ())
     }
 
-    pub fn listen_on<F, Fut>(
+    pub fn listen_on<H>(
         self,
         worker: usize,
-        handler: F
+        handler: H
     ) -> Result<TcpListener<Listening>, TcpListenError>
     where
-        F: Fn(TcpStream) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
+        H: TcpStreamHandler + Clone
     {
         let fd = Arc::clone(&self.fd);
 
@@ -160,49 +159,54 @@ impl TcpListener<WantsListen> {
             mut notification_subscription
         ) = self.get_worker_data(worker)?;
 
-        crate::spawn(async move {
+        crate::spawn_with(move || {
+            async move  {
+                // Listener Task
+
+                loop {
+
+                    futures::select! {
+                        result = std::future::poll_fn(|cx| {
+                            worker_handle.io_completion_queue.poll(key, cx)
+                        }).fuse() => {
+                            let mut stream = match result {
+                                Some(Ok(IoCompletion::Accept(completion))) => {
+
+                                    let peer_addr = completion.address.map(|addr| {
+                                        PeerAddress::try_from(addr)
+                                    }).transpose().unwrap_or(None);
+
+                                    TcpStream::new(
+                                        completion.fd,
+                                        None,
+                                        peer_addr
+                                    )
+                                },
+                                Some(Err(e)) => {
+                                    error!("cl-aysnc: Failed to accept connection: {e}");
+                                    continue;
+                                },
+                                _ => continue
+                            };
             
-            loop {
-
-                futures::select! {
-                    result = std::future::poll_fn(|cx| {
-                        worker_handle.io_completion_queue.poll(key, cx)
-                    }).fuse() => {
-                        let mut stream = match result {
-                            Some(Ok(IoCompletion::Accept(completion))) => {
-
-                                let peer_addr = completion.address.map(|addr| {
-                                    PeerAddress::try_from(addr)
-                                }).transpose().unwrap_or(None);
-
-                                TcpStream::new(
-                                    completion.fd,
-                                    None,
-                                    peer_addr
-                                )
-                            },
-                            Some(Err(e)) => {
-                                error!("cl-aysnc: Failed to accept connection: {e}");
+                            info!("cl-async: Accepted connection from {}", stream.address_peer().unwrap());
+            
+                            if let Err(e) = crate::spawn_with(TcpStreamHandlerSpawner {
+                                handler: handler.clone(),
+                                stream,
+                            }) {
+                                error!("cl-async: Failed to spawn handler task: {e}");
                                 continue;
-                            },
-                            _ => continue
-                        };
-        
-                        info!("cl-async: Accepted connection from {}", stream.address_peer().unwrap());
-        
-                        if let Err(e) = crate::spawn(handler(stream)) {
-                            error!("cl-async: Failed to spawn handler task: {e}");
-                            continue;
-                        }
-                    },
-                    _ = notification_subscription.recv().fuse() => { break; }
+                            }
+                        },
+                        _ = notification_subscription.recv().fuse() => { break; }
+                    }
+                    
                 }
-                
-            }
 
-            info!("cl-async: Shutting down listener");
-            drop(fd);
-            
+                info!("cl-async: Shutting down listener");
+                drop(fd);
+            }
         }).map_err(|e| {
             TcpListenError::ListenerTaskError(e.kind)
         })?;
@@ -210,14 +214,15 @@ impl TcpListener<WantsListen> {
         Ok(Self::transition_state::<Listening>(self))
     }
 
-    pub fn listen<F, Fut>(
+    pub fn listen<H>(
         self, 
-        handler: F
+        handler: H
     ) -> Result<TcpListener<Listening>, TcpListenError> 
     where
-        F: Fn(TcpStream) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    { self.listen_on(crate::next_worker_id(), handler) }
+        H: TcpStreamHandler + Clone
+    {
+        self.listen_on(crate::next_worker_id(), handler)
+    }
 }
 
 impl<T: TcpListenerState> AsRawFd for TcpListener<T> {
