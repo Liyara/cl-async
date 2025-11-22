@@ -10,8 +10,8 @@ pub trait TaskFactory: Send + 'static {
 
 impl<F, Fut> TaskFactory for F 
 where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static
+    F: (FnOnce() -> Fut) + Send + 'static,
+    Fut: Future<Output = ()> + 'static
 {
     type Fut = Fut;
 
