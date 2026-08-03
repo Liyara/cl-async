@@ -504,6 +504,21 @@ impl IoOperation {
         })
     }
 
+    pub fn open_at<T: AsRawFd>(
+        fd: &T,
+        path: &Path,
+        settings: data::IoFileOpenSettings
+    ) -> Result<Self, IoSubmissionError> {
+        Ok(Self {
+            fd: fd.as_raw_fd(),
+            t: IoType::OpenAt(data::IoOpenAtData::new(
+                path,
+                settings
+            )?),
+            duration: IoDuration::Single,
+        })
+    }
+
     pub fn stats_fd<T: AsRawFd>(
         fd: &T,
         flags: data::IoStatxFlags,

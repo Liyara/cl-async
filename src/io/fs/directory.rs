@@ -2,7 +2,7 @@ use std::{ffi::{OsStr, OsString}, os::{fd::{AsRawFd, FromRawFd, RawFd}, unix::ff
 
 use thiserror::Error;
 
-use crate::{io::{completion::TryFromCompletion, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoStatxFlags, IoStatxMask}, IoCompletion, IoError, IoOperation, OwnedFdAsync}, OsError};
+use crate::{io::{completion::TryFromCompletion, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoFileSystemOpenFlags, IoFileSystemResolveFlags, IoStatxFlags, IoStatxMask}, IoCompletion, IoError, IoOperation, OwnedFdAsync}, OsError};
 
 use super::{IoStatsFuture, Stats};
 
@@ -136,17 +136,27 @@ impl Directory {
 
     pub async fn open(
         path: &Path,
+        open: IoFileSystemOpenFlags,
+        resolve: IoFileSystemResolveFlags,
         mode: IoFileSystemMode,
     ) -> Result<Self, OpenDirectoryError> {
         Self::mkdir_recursive(path, mode).await?;
-        Ok(Self::open_unchecked(path).await?)
+        Ok(Self::open_existing(
+            path,
+            open,
+            resolve
+        ).await?)
     }
 
-    pub async fn open_unchecked(path: &Path) -> Result<Self, IoError> {
+    pub async fn open_existing(
+        path: &Path,
+        open: IoFileSystemOpenFlags,
+        resolve: IoFileSystemResolveFlags
+    ) -> Result<Self, IoError> {
         IoDirectoryFuture::new(
             IoOperation::open(
                 path,
-                IoFileOpenSettings::dir()
+                IoFileOpenSettings::new_dir(open, resolve)
             )?
         ).await
     }

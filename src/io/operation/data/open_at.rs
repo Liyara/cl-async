@@ -1,18 +1,9 @@
-use std::{ffi::CString, fmt, os::{fd::RawFd, unix::ffi::OsStrExt}, path::Path};
+use std::{ffi::CString, os::{fd::RawFd, unix::ffi::OsStrExt}, path::Path};
 use bitflags::bitflags;
 use bytes::Bytes;
+use io_uring::types::OpenHow;
 
 use crate::io::IoSubmissionError;
-
-bitflags! {
-    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct IoFileSystemPermissions: u32 {
-        const NONE = 0;
-        const EXECUTE = 1 << 0;
-        const WRITE = 1 << 1;
-        const READ = 1 << 2;
-    }
-}
 
 bitflags! {
     #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -46,6 +37,56 @@ impl From<libc::c_uchar> for IoFileDescriptorType {
             libc::DT_SOCK => IoFileDescriptorType::SOCKET,
             _ => IoFileDescriptorType::UNKNOWN,
         }
+    }
+}
+
+bitflags! {
+    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct IoFileSystemPermissions: u32 {
+        const NONE = 0;
+        const EXECUTE = 1 << 0;
+        const WRITE = 1 << 1;
+        const READ = 1 << 2;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[repr(i32)]
+pub enum IoFileSystemAccessType {
+    ReadOnly = 0,
+    WriteOnly = 1,
+    ReadWrite = 2
+}
+
+bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct IoFileSystemOpenFlags: i32 {
+        const EXCLUSIVE = libc::O_EXCL;
+        const DIRECTORY = libc::O_DIRECTORY;
+        const NOFOLLOW = libc::O_NOFOLLOW;
+        const TRUNCATE = libc::O_TRUNC;
+        const TMPFILE = libc::O_TMPFILE;
+        const APPEND = libc::O_APPEND;
+        const ASYNC = libc::O_ASYNC;
+        const CLOSE_ON_EXEC = libc::O_CLOEXEC;
+        const DIRECT = libc::O_DIRECT;
+        const DSYNC = libc::O_DSYNC;
+        const LARGE_FILE = libc::O_LARGEFILE;
+        const NO_ACCESS_TIME = libc::O_NOATIME;
+        const NO_CONTROLLING_TERMINAL = libc::O_NOCTTY;
+        const NONBLOCK = libc::O_NONBLOCK;
+        const NO_DELAY = libc::O_NDELAY;
+        const PATH = libc::O_PATH;
+        const SYNC = libc::O_SYNC;
+    }
+
+}
+
+impl IoFileSystemOpenFlags {
+    pub fn to_dir_safe(self) -> Self {
+        self 
+        | IoFileSystemOpenFlags::DIRECTORY
+        & !IoFileSystemOpenFlags::TRUNCATE
     }
 }
 
@@ -228,6 +269,19 @@ impl IoFileCreateMode {
     }
 }
 
+bitflags! {
+    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct IoFileSystemResolveFlags: u64 {
+        const NONE = 0;
+        const RESOLVE_BENEATH = libc::RESOLVE_BENEATH;
+        const RESOLVE_IN_ROOT = libc::RESOLVE_IN_ROOT;
+        const RESOLVE_NO_SYMLINKS = libc::RESOLVE_NO_SYMLINKS;
+        const RESOLVE_NO_XDEV = libc::RESOLVE_NO_XDEV;
+        const RESOLVE_NO_MAGICLINKS = libc::RESOLVE_NO_MAGICLINKS;
+        const RESOLVE_CACHED = libc::RESOLVE_CACHED;
+    }
+}
+
 impl Default for IoFileCreateMode {
     fn default() -> Self {
         Self::DoNotCreate
@@ -236,80 +290,86 @@ impl Default for IoFileCreateMode {
 
 #[derive(Debug, Clone)]
 pub struct IoFileOpenSettings {
-    flags: i32,
+    access_type: IoFileSystemAccessType,
+    open_flags: IoFileSystemOpenFlags,
+    resolve_flags: IoFileSystemResolveFlags,
     mode: IoFileCreateMode,
 }
 
-impl fmt::Display for IoFileOpenSettings {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "IoFileOpenSettings {{ flags: {}, mode: {:?} }}", self.flags, self.mode)
+impl std::fmt::Display for IoFileOpenSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IoFileOpenSettings {{ access_type: {:?}, open_flags: {:?}, resolve_flags: {:?}, mode: {:?} }}", 
+            self.access_type, self.open_flags, self.resolve_flags, self.mode)
     }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-#[repr(i32)]
-pub enum IoFileWriteMode {
-    Default = 0,
-    Append = libc::O_APPEND,
-    Truncate = libc::O_TRUNC,
 }
 
 impl IoFileOpenSettings {
 
-    pub fn dir() -> Self {
+    pub fn new(
+        access_flags: IoFileSystemAccessType,
+        open_flags: IoFileSystemOpenFlags,
+        resolve_flags: IoFileSystemResolveFlags,
+        mode: IoFileCreateMode
+    ) -> Self {
+        Self { access_type: access_flags, open_flags, resolve_flags, mode }
+    }
+
+    pub fn new_dir(
+        open_flags: IoFileSystemOpenFlags,
+        resolve_flags: IoFileSystemResolveFlags,
+    ) -> Self {
         Self { 
-            flags: libc::O_RDONLY | libc::O_DIRECTORY,
+            access_type: IoFileSystemAccessType::ReadOnly,
+            open_flags: open_flags.to_dir_safe(),
+            resolve_flags,
             mode: IoFileCreateMode::DoNotCreate
         }
     }
 
-    pub fn read_only(mode: IoFileCreateMode) -> Self {
-        Self { 
-            flags: libc::O_RDONLY | mode.as_flag(),
-            mode
-        }
-    }
-
-    pub fn write_only(
-        write_mode: IoFileWriteMode,
-        mode: IoFileCreateMode
-    ) -> Self {
-        Self { 
-            flags: libc::O_WRONLY | write_mode as i32 | mode.as_flag(),
-            mode
-        }
-    }
-
-    pub fn read_write(
-        write_mode: IoFileWriteMode,
-        mode: IoFileCreateMode
-    ) -> Self {
-        Self { 
-            flags: libc::O_RDWR | write_mode as i32 | mode.as_flag(),
-            mode
-        }
+    pub fn as_flags(&self) -> i32 {
+        self.access_type as i32 | self.open_flags.bits() | self.mode.as_flag()
     }
 
     pub fn is_dir(&self) -> bool {
-        self.flags & libc::O_DIRECTORY != 0
+        self.open_flags.contains(IoFileSystemOpenFlags::DIRECTORY)
     }
 
     pub fn is_read_only(&self) -> bool {
-        self.flags & libc::O_RDONLY != 0
+        matches!(self.access_type, IoFileSystemAccessType::ReadOnly)
     }
 
     pub fn is_write_only(&self) -> bool {
-        self.flags & libc::O_WRONLY != 0
+        matches!(self.access_type, IoFileSystemAccessType::WriteOnly)
     }
 
     pub fn is_read_write(&self) -> bool {
-        self.flags & libc::O_RDWR != 0
+        matches!(self.access_type, IoFileSystemAccessType::ReadWrite)
     }
 
     pub fn mode(&self) -> &IoFileCreateMode {
         &self.mode
     }
+
+    pub fn mode_value(&self) -> u32 {
+        match self.mode {
+            IoFileCreateMode::DoNotCreate => 0,
+            IoFileCreateMode::Create(mode) => mode.into()
+        }
+    }
+
+    pub fn access_type(&self) -> &IoFileSystemAccessType {
+        &self.access_type
+    }
+
+    pub fn resolve_flags(&self) -> &IoFileSystemResolveFlags {
+        &self.resolve_flags
+    }
+
+    pub fn open_flags(&self) -> &IoFileSystemOpenFlags {
+        &self.open_flags
+    }
 }
+
 
 pub struct IoOpenAtData {
     path: Option<CString>,
@@ -337,7 +397,7 @@ impl super::CompletableOperation for IoOpenAtData {
             warn!("cl-async: openat(): Expected path but got None; returning empty bytes.");
             Bytes::new()
         });
-
+        
         crate::io::IoCompletion::File(
             crate::io::completion_data::IoFileCompletion { 
                 fd: result_code as RawFd,
@@ -349,14 +409,17 @@ impl super::CompletableOperation for IoOpenAtData {
 
 impl super::AsUringEntry for IoOpenAtData {
     fn as_uring_entry(&mut self, fd: RawFd, key: crate::Key) -> io_uring::squeue::Entry {
-        let mut op = io_uring::opcode::OpenAt::new(
+        
+        let how = OpenHow::new()
+        .flags(self.settings.as_flags() as u64)
+        .resolve(self.settings.resolve_flags().bits())
+        .mode(self.settings.mode_value() as u64);
+        
+        let op = io_uring::opcode::OpenAt2::new(
             io_uring::types::Fd(fd),
             self.path.as_ref().unwrap().as_ptr(),
-        ).flags(self.settings.flags);
-
-        if let IoFileCreateMode::Create(mode) = self.settings.mode {
-            op = op.mode(u32::from(mode))
-        };
+            &how
+        );
         
         op.build().user_data(key.as_u64())
     }
