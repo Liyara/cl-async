@@ -117,12 +117,65 @@ impl File {
         }
     }
 
+    pub async fn open_at(
+        dir: &Directory,
+        path: &Path,
+        settings: IoFileOpenSettings
+    ) -> Result<Self, FileOpenError> {
+
+        if settings.is_dir() {
+            return Err(
+                FileOpenError::InvalidFileOpenSettings(settings)
+            );
+        }
+
+        match Self::open_at_unchecked(
+            dir, 
+            path, 
+            settings.clone()
+        ).await {
+            Err(e) => {
+                if let Some(OsError::NotFound) = e.as_os_error() {
+                    if let IoFileCreateMode::Create(mode) = settings.mode() {
+                        match path.parent() {
+                            Some(parent) => {
+                                Directory::mkdir_recursive(
+                                    parent,
+                                    *mode
+                                ).await?;
+
+                                return Ok(Self::open_at_unchecked(dir, path, settings).await?)
+                            },
+                            None => {}
+                        }
+                    }
+                }
+                Err(FileOpenError::IoError(e))
+            },
+            Ok(file) => Ok(file)
+        }
+    }
+
     pub (crate) async fn open_unchecked(
         path: &Path,
         settings: IoFileOpenSettings
     ) -> Result<Self, IoError> {
         Ok(IoFileFuture::new(
             IoOperation::open(
+                path, 
+                settings
+            )?
+        ).await?)
+    }
+
+    pub (crate) async fn open_at_unchecked(
+        dir: &Directory,
+        path: &Path,
+        settings: IoFileOpenSettings
+    ) -> Result<Self, IoError> {
+        Ok(IoFileFuture::new(
+            IoOperation::open_at(
+                dir,
                 path, 
                 settings
             )?
