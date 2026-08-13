@@ -82,7 +82,7 @@ impl File {
 
     pub async fn open(
         path: &Path,
-        settings: IoFileOpenSettings
+        settings: IoFileOpenSettings,
     ) -> Result<Self, FileOpenError> {
 
         if settings.is_dir() {

@@ -1,5 +1,4 @@
 #![feature(decl_macro)]
-#![feature(associated_type_defaults)]
 
 use once_cell::sync::OnceCell;
 use thiserror::Error;

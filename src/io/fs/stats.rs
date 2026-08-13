@@ -1,6 +1,8 @@
-use std::ops::Add;
+use std::{ops::Add, path::Path};
 use std::time::UNIX_EPOCH;
 
+use crate::io::operation_data::{IoStatxFlags, IoStatxMask};
+use crate::io::{IoError, IoOperation};
 use crate::io::{
     completion::TryFromCompletion, 
     operation::future::IoOperationFuture, 
@@ -39,6 +41,22 @@ pub struct Stats {
 
     pub direct_io_memory_alignment: Option<u32>,
     pub direct_io_offset_alignment: Option<u32>,
+}
+
+impl Stats {
+    pub async fn stat(
+        path: &Path,
+        flags: IoStatxFlags,
+        mask: IoStatxMask
+    ) -> Result<Self, IoError> {
+        Ok(IoStatsFuture::new(
+            IoOperation::stats_path(
+                path,
+                flags,
+                mask
+            )?
+        ).await?.into())
+    }
 }
 
 impl Default for Stats {

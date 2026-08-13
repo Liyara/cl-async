@@ -2,7 +2,7 @@ use std::{ffi::{OsStr, OsString}, os::{fd::{AsRawFd, FromRawFd, RawFd}, unix::ff
 
 use thiserror::Error;
 
-use crate::{io::{completion::TryFromCompletion, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoFileSystemOpenFlags, IoFileSystemResolveFlags, IoStatxFlags, IoStatxMask}, IoCompletion, IoError, IoOperation, OwnedFdAsync}, OsError};
+use crate::{OsError, io::{IoCompletion, IoError, IoOperation, OwnedFdAsync, completion::TryFromCompletion, fs::{File, FileOpenError}, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoFileSystemOpenFlags, IoFileSystemResolveFlags, IoStatxFlags, IoStatxMask}}};
 
 use super::{IoStatsFuture, Stats};
 
@@ -48,6 +48,14 @@ pub struct Directory {
 }
 
 impl Directory {
+
+    pub async fn open_file(
+        &self,
+        subpath: &Path,
+        settings: IoFileOpenSettings
+    ) -> Result<File, FileOpenError> {
+        File::open_at(self, subpath, settings).await
+    }
 
     pub async fn mkdir_recursive(
         path: &Path,

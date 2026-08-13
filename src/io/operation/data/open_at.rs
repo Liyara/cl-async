@@ -334,6 +334,14 @@ impl IoFileOpenSettings {
         self.open_flags.contains(IoFileSystemOpenFlags::DIRECTORY)
     }
 
+    pub fn is_read_enabled(&self) -> bool {
+        matches!(self.access_type, IoFileSystemAccessType::ReadOnly | IoFileSystemAccessType::ReadWrite)
+    }
+
+    pub fn is_write_enabled(&self) -> bool {
+        matches!(self.access_type, IoFileSystemAccessType::WriteOnly | IoFileSystemAccessType::ReadWrite)
+    }
+
     pub fn is_read_only(&self) -> bool {
         matches!(self.access_type, IoFileSystemAccessType::ReadOnly)
     }
