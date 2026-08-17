@@ -261,7 +261,7 @@ pub enum IoFileCreateMode {
 }
 
 impl IoFileCreateMode {
-    fn as_flag(&self) -> i32 {
+    pub fn as_flag(&self) -> i32 {
         match self {
             IoFileCreateMode::DoNotCreate => 0,
             IoFileCreateMode::Create(_) => libc::O_CREAT

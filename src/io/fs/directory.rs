@@ -169,6 +169,24 @@ impl Directory {
         ).await
     }
 
+    pub fn open_existing_sync(
+        path: &Path,
+        open: IoFileSystemOpenFlags,
+    ) -> Result<Self, OsError> {
+        unsafe {
+
+            let ret = libc::openat(
+                libc::AT_FDCWD,
+                path.as_os_str().as_bytes().as_ptr() as *const i8,
+                open.bits() | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            );
+
+            if ret < 0 { return Err(OsError::last()); }
+
+            Ok(Self::new(path, ret))
+        }
+    }
+
     pub fn path(&self) -> &Path { &self.path }
 
     pub async fn stats(
