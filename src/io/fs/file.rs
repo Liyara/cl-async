@@ -13,21 +13,16 @@ use bytes::Bytes;
 use thiserror::Error;
 
 use crate::{
-    io::{
-        completion::TryFromCompletion, operation::future::{
-            IoOperationFuture, IoReadFuture, IoVoidFuture, __async_impl_copyable__, __async_impl_readable__, __async_impl_types__, __async_impl_writable__
+    OsError, io::{
+        IoCompletion, IoError, IoOperation, OwnedFdAsync, completion::TryFromCompletion, operation::future::{
+            __async_impl_copyable__, __async_impl_readable__, __async_impl_types__, __async_impl_writable__, IoOperationFuture, IoReadFuture, IoVoidFuture
         }, operation_data::{
             IoFileCreateMode, 
             IoFileOpenSettings, 
             IoStatxFlags, 
             IoStatxMask
-        }, 
-        IoCompletion, 
-        IoError, 
-        IoOperation, 
-        OwnedFdAsync
-    }, 
-    OsError
+        }
+    }
 };
 
 use super::{
@@ -213,28 +208,17 @@ impl File {
     }
 
     pub async fn read_all(&self) -> Result<Bytes, IoError> {
-        self.read_from(0).await
-    }
-
-    pub async fn read_from(
-        &self,
-        offset: usize
-    ) -> Result<Bytes, IoError> {
         
         let size = self.stats(
             IoStatxFlags::DEFAULT,
             IoStatxMask::SIZE
         ).await?.size.unwrap_or(0) as usize;
 
-        let len = size - offset;
-
-        if len == 0 { return Ok(Bytes::new()); }
-
         Ok(IoReadFuture::new(
             IoOperation::read_at(
                 self,
-                offset,
-                len
+                0,
+                size
             )
         ).await?)
     }

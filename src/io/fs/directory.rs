@@ -132,7 +132,7 @@ impl Directory {
         } else { Ok(()) }
     }
 
-    unsafe fn new(
+    pub unsafe fn new(
         path: &Path,
         fd: RawFd
     ) -> Self {
