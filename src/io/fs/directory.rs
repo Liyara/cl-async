@@ -2,7 +2,7 @@ use std::{ffi::{OsStr, OsString}, os::{fd::{AsRawFd, FromRawFd, RawFd}, unix::ff
 
 use thiserror::Error;
 
-use crate::{OsError, io::{IoCompletion, IoError, IoOperation, OwnedFdAsync, completion::TryFromCompletion, fs::{File, FileOpenError}, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoFileSystemOpenFlags, IoFileSystemResolveFlags, IoStatxFlags, IoStatxMask}}};
+use crate::{OsError, io::{IoCompletion, IoError, IoOperation, IoSubmissionError, OwnedFdAsync, completion::TryFromCompletion, fs::{File, FileOpenError}, operation::future::{IoOperationFuture, IoVoidFuture}, operation_data::{IoFileDescriptorType, IoFileOpenSettings, IoFileSystemMode, IoFileSystemOpenFlags, IoFileSystemResolveFlags, IoStatxFlags, IoStatxMask}}};
 
 use super::{IoStatsFuture, Stats};
 
@@ -172,19 +172,18 @@ impl Directory {
     pub fn open_existing_sync(
         path: &Path,
         open: IoFileSystemOpenFlags,
-    ) -> Result<Self, OsError> {
-        unsafe {
+    ) -> Result<Self, IoError> {
 
-            let ret = libc::openat(
-                libc::AT_FDCWD,
-                path.as_os_str().as_bytes().as_ptr() as *const i8,
-                open.bits() | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            );
+        let cstr = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(IoSubmissionError::from)?;
 
-            if ret < 0 { return Err(OsError::last()); }
+        let ret = syscall!(openat(
+            libc::AT_FDCWD,
+            cstr.as_ptr(),
+            open.bits() | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )).map_err(OsError::from)?;
 
-            Ok(Self::new(path, ret))
-        }
+        Ok(unsafe { Self::new(path, ret) })
     }
 
     pub fn path(&self) -> &Path { &self.path }

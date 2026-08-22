@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::{
     OsError, io::{
-        IoCompletion, IoError, IoOperation, OwnedFdAsync, completion::TryFromCompletion, operation::future::{
+        IoCompletion, IoError, IoOperation, IoSubmissionError, OwnedFdAsync, completion::TryFromCompletion, operation::future::{
             __async_impl_copyable__, __async_impl_readable__, __async_impl_types__, __async_impl_writable__, IoOperationFuture, IoReadFuture, IoVoidFuture
         }, operation_data::{
             IoFileCreateMode, IoFileOpenSettings, IoFileSystemAccessType, IoFileSystemOpenFlags, IoStatxFlags, IoStatxMask
@@ -114,27 +114,26 @@ impl File {
         open: IoFileSystemOpenFlags,
         access_type: IoFileSystemAccessType,
         mode: IoFileCreateMode,
-    ) -> Result<Self, OsError> {
-        unsafe {
+    ) -> Result<Self, IoError> {
 
-            let ret = match mode {
-                IoFileCreateMode::DoNotCreate => libc::openat(
-                    libc::AT_FDCWD,
-                    path.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
-                    access_type as i32 | open.bits(),
-                ),
-                IoFileCreateMode::Create(io_file_system_mode) => libc::openat(
-                    libc::AT_FDCWD,
-                    path.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
-                    access_type as i32 | open.bits() | libc::O_CREAT,
-                    libc::mode_t::from(io_file_system_mode)
-                ),
-            };
+        let cstr = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(IoSubmissionError::from)?;
 
-            if ret < 0 { return Err(OsError::last()); }
+        let ret = match mode {
+            IoFileCreateMode::DoNotCreate => syscall!(openat(
+                libc::AT_FDCWD,
+                cstr.as_ptr() as *const libc::c_char,
+                access_type as i32 | open.bits(),
+            )),
+            IoFileCreateMode::Create(mode) => syscall!(openat(
+                libc::AT_FDCWD,
+                cstr.as_ptr() as *const libc::c_char,
+                access_type as i32 | open.bits() | libc::O_CREAT,
+                libc::mode_t::from(mode)
+            )),
+        }.map_err(OsError::from)?;
 
-            Ok(File::new(ret, path.to_path_buf()))
-        }
+        Ok(unsafe { File::new(ret, path.to_path_buf()) })
     }
 
     pub async fn open_at(

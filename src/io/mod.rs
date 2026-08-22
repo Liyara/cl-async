@@ -626,4 +626,13 @@ impl IoRecvMessageRecovery for IoError {
         }
     }
 }
+
+impl From<OsError> for IoError {
+    fn from(e: OsError) -> Self {
+        IoError::Operation(IoOperationError {
+            failure: IoFailure::Generic,
+            os_error: e,
+        })
+    }
+}
             
